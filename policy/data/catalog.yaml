@@ -1,0 +1,181 @@
+# Single source of truth for every policy: severity, scope and compliance mapping.
+# Read by the Rego rules (data.catalog) AND by scripts/policy_report.py, so the PR report
+# can show every control (pass / fail / warn / waived / n/a), not just the failures.
+#
+# severity: high   -> conftest `deny`  -> blocks the PR
+#           medium -> conftest `warn`  -> reported, does not block
+# cloud:    aws | gcp | all
+# environments: omit = all environments; otherwise only evaluated for these
+#
+# Control references name the benchmark recommendation by title. Section numbers
+# change between benchmark versions; check the version your auditor uses.
+catalog:
+  # ------------------------------------------------------------------ AWS
+  AWS-RDS-001:
+    cloud: aws
+    severity: high
+    title: RDS storage is encrypted at rest
+    controls: ["CIS AWS Foundations: Ensure encryption-at-rest is enabled for RDS instances", "SOC 2 CC6.1", "ISO 27001 A.8.24"]
+  AWS-RDS-002:
+    cloud: aws
+    severity: high
+    title: RDS instance is not publicly accessible
+    controls: ["CIS AWS Foundations: Ensure RDS instances are not publicly accessible", "SOC 2 CC6.6"]
+  AWS-RDS-003:
+    cloud: aws
+    severity: high
+    title: RDS automated backups retained for at least 7 days
+    controls: ["SOC 2 A1.2", "ISO 27001 A.8.13"]
+  AWS-RDS-004:
+    cloud: aws
+    severity: high
+    environments: [production, prod]
+    title: Production RDS has deletion protection
+    controls: ["SOC 2 A1.2", "SOC 2 CC8.1"]
+  AWS-RDS-005:
+    cloud: aws
+    severity: high
+    environments: [production, prod]
+    title: Production RDS is Multi-AZ
+    controls: ["SOC 2 A1.2", "AWS Well-Architected REL10"]
+  AWS-RDS-006:
+    cloud: aws
+    severity: medium
+    title: RDS auto minor version upgrade is enabled
+    controls: ["CIS AWS Foundations: Ensure Auto Minor Version Upgrade is enabled for RDS", "SOC 2 CC7.1"]
+  AWS-RDS-007:
+    cloud: aws
+    severity: medium
+    title: RDS exports PostgreSQL logs to CloudWatch
+    controls: ["SOC 2 CC7.2", "ISO 27001 A.8.15"]
+  AWS-RDS-008:
+    cloud: aws
+    severity: medium
+    title: RDS master password is managed by Secrets Manager (not stored in Terraform state)
+    controls: ["SOC 2 CC6.1", "ISO 27001 A.5.17"]
+  AWS-EKS-001:
+    cloud: aws
+    severity: high
+    title: EKS envelope-encrypts Kubernetes Secrets with KMS
+    controls: ["CIS Amazon EKS: Ensure Kubernetes Secrets are encrypted using KMS", "SOC 2 CC6.1"]
+  AWS-EKS-002:
+    cloud: aws
+    severity: high
+    title: EKS control-plane audit and authenticator logs are enabled
+    controls: ["CIS Amazon EKS: Enable audit logs", "SOC 2 CC7.2"]
+  AWS-EKS-003:
+    cloud: aws
+    severity: medium
+    title: EKS public API endpoint is restricted to known CIDRs
+    controls: ["CIS Amazon EKS: Restrict access to the control plane endpoint", "SOC 2 CC6.6"]
+  AWS-EKS-004:
+    cloud: aws
+    severity: high
+    title: EKS nodes require IMDSv2
+    controls: ["CIS AWS Foundations: Ensure EC2 Metadata Service only allows IMDSv2", "SOC 2 CC6.1"]
+  AWS-EKS-005:
+    cloud: aws
+    severity: high
+    title: EKS node root volumes are encrypted
+    controls: ["CIS AWS Foundations: Ensure EBS volume encryption is enabled", "SOC 2 CC6.1"]
+  AWS-NET-001:
+    cloud: aws
+    severity: high
+    title: Every VPC has flow logging enabled
+    controls: ["CIS AWS Foundations: Ensure VPC flow logging is enabled in all VPCs", "SOC 2 CC7.2"]
+  AWS-NET-002:
+    cloud: aws
+    severity: high
+    title: No security group allows SSH/RDP/PostgreSQL from the internet
+    controls: ["CIS AWS Foundations: Ensure no security groups allow ingress from 0.0.0.0/0 to remote server administration ports", "SOC 2 CC6.6"]
+
+  # ------------------------------------------------------------------ GCP
+  GCP-SQL-001:
+    cloud: gcp
+    severity: high
+    title: Cloud SQL has no public IP
+    controls: ["CIS GCP Foundations: Ensure Cloud SQL instances do not have public IPs", "SOC 2 CC6.6"]
+  GCP-SQL-002:
+    cloud: gcp
+    severity: high
+    title: Cloud SQL requires SSL/TLS for all connections
+    controls: ["CIS GCP Foundations: Ensure Cloud SQL requires all incoming connections to use SSL", "SOC 2 CC6.7"]
+  GCP-SQL-003:
+    cloud: gcp
+    severity: high
+    title: Cloud SQL automated backups are enabled
+    controls: ["CIS GCP Foundations: Ensure Cloud SQL instances are configured with automated backups", "SOC 2 A1.2"]
+  GCP-SQL-004:
+    cloud: gcp
+    severity: high
+    environments: [production, prod]
+    title: Production Cloud SQL has deletion protection
+    controls: ["SOC 2 A1.2", "SOC 2 CC8.1"]
+  GCP-SQL-005:
+    cloud: gcp
+    severity: high
+    environments: [production, prod]
+    title: Production Cloud SQL is regional (HA) with point-in-time recovery
+    controls: ["SOC 2 A1.2", "Google Cloud Architecture Framework: Reliability"]
+  GCP-SQL-006:
+    cloud: gcp
+    severity: medium
+    title: Cloud SQL PostgreSQL audit/logging flags are set
+    controls: ["CIS GCP Foundations: Cloud SQL for PostgreSQL logging flags (log_connections, log_disconnections, pgaudit)", "SOC 2 CC7.2"]
+  GKE-001:
+    cloud: gcp
+    severity: high
+    title: GKE nodes are private
+    controls: ["CIS GKE: Ensure clusters are created with Private Nodes", "SOC 2 CC6.6"]
+  GKE-002:
+    cloud: gcp
+    severity: high
+    title: GKE uses Workload Identity and the GKE metadata server
+    controls: ["CIS GKE: Enable Workload Identity", "CIS GKE: Enable GKE Metadata Server", "SOC 2 CC6.1"]
+  GKE-003:
+    cloud: gcp
+    severity: high
+    title: GKE nodes do not use the default Compute Engine service account
+    controls: ["CIS GKE: Prefer dedicated least-privilege service accounts for nodes", "SOC 2 CC6.3"]
+  GKE-004:
+    cloud: gcp
+    severity: high
+    title: GKE node auto-repair and auto-upgrade are enabled
+    controls: ["CIS GKE: Ensure Node Auto-Repair and Auto-Upgrade are enabled", "SOC 2 CC7.1"]
+  GKE-005:
+    cloud: gcp
+    severity: high
+    title: GKE legacy ABAC is disabled
+    controls: ["CIS GKE: Ensure Legacy Authorization (ABAC) is disabled", "SOC 2 CC6.3"]
+  GKE-006:
+    cloud: gcp
+    severity: high
+    title: GKE nodes are Shielded with Secure Boot
+    controls: ["CIS GKE: Ensure Shielded GKE Nodes and Secure Boot are enabled", "SOC 2 CC6.8"]
+  GKE-007:
+    cloud: gcp
+    severity: medium
+    title: GKE control plane is restricted with authorized networks
+    controls: ["CIS GKE: Ensure Control Plane Authorized Networks is enabled", "SOC 2 CC6.6"]
+  GKE-008:
+    cloud: gcp
+    severity: medium
+    title: GKE encrypts Secrets at the application layer with Cloud KMS
+    controls: ["CIS GKE: Ensure Kubernetes Secrets are encrypted using keys managed in Cloud KMS", "SOC 2 CC6.1"]
+  GCP-NET-001:
+    cloud: gcp
+    severity: high
+    title: Every subnet has VPC flow logs enabled
+    controls: ["CIS GCP Foundations: Ensure VPC Flow Logs is enabled for every subnet", "SOC 2 CC7.2"]
+  GCP-NET-002:
+    cloud: gcp
+    severity: high
+    title: No firewall rule allows SSH/RDP from the internet
+    controls: ["CIS GCP Foundations: Ensure SSH and RDP access is restricted from the internet", "SOC 2 CC6.6"]
+
+  # ------------------------------------------------------------------ all clouds
+  TAG-001:
+    cloud: all
+    severity: high
+    title: Resources carry the required project / environment / managed-by tags or labels
+    controls: ["SOC 2 CC6.1 (asset inventory)", "ISO 27001 A.5.9", "FinOps cost allocation"]

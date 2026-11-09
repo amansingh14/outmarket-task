@@ -1,0 +1,215 @@
+# Terraform compliance gate: runs on every PR that touches infrastructure.
+#
+#   validate      terraform fmt -check, init, validate        (per cloud)
+#   policy-tests  opa test on the Rego policies themselves
+#   policy        plan the full desired state -> conftest (OPA)  (per cloud x environment)
+#   report        one sticky PR comment with every control, fails the check if anything blocks
+#
+# Mark the "Terraform compliance / report" check as required in branch protection.
+name: Terraform compliance
+
+on:
+  pull_request:
+    paths:
+      - "infra/terraform/**"
+      - "policy/**"
+      - "config/environments/**"
+      - "scripts/policy_report.py"
+      - "scripts/policy-check.sh"
+      - ".github/workflows/terraform-compliance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write # sticky report comment
+  id-token: write # OIDC to the read-only cloud roles
+
+concurrency:
+  group: tf-compliance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  TF_VERSION: 1.12.2
+  OPA_VERSION: 1.0.0
+  CONFTEST_VERSION: 0.56.0
+  TF_IN_AUTOMATION: "1"
+  TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
+
+jobs:
+  validate:
+    name: validate (${{ matrix.cloud }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, gcp]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - run: mkdir -p "$TF_PLUGIN_CACHE_DIR" results
+      - name: fmt / init / validate
+        working-directory: infra/terraform
+        run: |
+          fmt=pass;  terraform fmt -check -recursive -diff . || fmt=fail
+          init=pass; terraform -chdir=envs/${{ matrix.cloud }} init -backend=false -input=false -no-color || init=fail
+          if [ "$init" = pass ]; then
+            terraform -chdir=envs/${{ matrix.cloud }} validate -json -no-color > /tmp/validate.json || true
+          else
+            echo '{"valid": false, "diagnostics": [{"severity": "error", "summary": "terraform init failed"}]}' > /tmp/validate.json
+          fi
+          jq -n --arg c "${{ matrix.cloud }}" --arg fmt "$fmt" --arg init "$init" --slurpfile v /tmp/validate.json \
+            '{cloud: $c, fmt: $fmt, init: $init, validate: $v[0]}' > "$GITHUB_WORKSPACE/results/validate-${{ matrix.cloud }}.json"
+          cat "$GITHUB_WORKSPACE/results/validate-${{ matrix.cloud }}.json"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-validate-${{ matrix.cloud }}
+          path: results/
+
+  policy-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: ${{ env.OPA_VERSION }}
+      - name: opa fmt / check / test
+        run: |
+          mkdir -p results
+          status=pass
+          out=$( { opa fmt --fail --list policy/ && opa check --strict policy/terraform policy/data \
+                   && opa test policy/terraform policy/data -v; } 2>&1 ) || status=fail
+          echo "$out"
+          jq -n --arg s "$status" --arg o "$out" '{status: $s, output: $o}' > results/opa-test.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: results-opa-test
+          path: results/
+
+  policy:
+    name: policy (${{ matrix.cloud }}/${{ matrix.env }})
+    needs: validate
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: [aws, gcp]
+        env: [staging, production]
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID || 'policy-check-placeholder' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install conftest and devops-ai
+        run: |
+          curl -sSfL "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin conftest
+          pip install --quiet ./ai
+          mkdir -p "$TF_PLUGIN_CACHE_DIR" results
+
+      # ---- read-only credentials (only what `terraform plan` needs for data sources) ----
+      - name: AWS credentials (read-only plan role)
+        id: aws
+        if: matrix.cloud == 'aws' && vars.AWS_PLAN_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: GCP credentials (read-only plan identity)
+        if: matrix.cloud == 'gcp' && vars.GCP_WIF_PROVIDER != ''
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_PLAN_SERVICE_ACCOUNT }}
+
+      - name: Plan full desired state
+        id: plan
+        run: |
+          set -uo pipefail
+          C=${{ matrix.cloud }}; E=${{ matrix.env }}
+          status() { jq -n --arg s "$1" --arg r "$2" '{status: $s, reason: $r}' > "results/status-$C-$E.json"; }
+
+          if [ "$C" = aws ] && [ -z "${AWS_ACCESS_KEY_ID:-}" ]; then
+            status skipped "AWS read-only role not configured (set repo variable AWS_PLAN_ROLE_ARN)"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$C" = gcp ] && [ -z "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+            # The GCP root has no data sources, so a full-state plan needs no real API access.
+            export GOOGLE_OAUTH_ACCESS_TOKEN=offline-plan-dummy-token
+          fi
+
+          devops-ai --summary /dev/null render --env "$E" --cloud "$C" --out-dir build
+          TF=infra/terraform/envs/$C
+          # Empty local state: every resource is evaluated as a create, so policies see the
+          # complete configuration and no access to the real state bucket is needed.
+          printf 'terraform {\n  backend "local" {}\n}\n' > "$TF/backend_override.tf"
+          VARS=(-var-file="$PWD/build/$E.$C.auto.tfvars.json")
+          if [ "$C" = gcp ]; then VARS+=(-var "region=$GCP_REGION" -var "project_id=$GCP_PROJECT_ID")
+          else VARS+=(-var "region=$AWS_REGION"); fi
+
+          if ! terraform -chdir="$TF" init -input=false -no-color > plan.log 2>&1 \
+             || ! terraform -chdir="$TF" plan -input=false -lock=false -no-color "${VARS[@]}" -out=tfplan >> plan.log 2>&1; then
+            tail -40 plan.log
+            status plan_failed "terraform plan failed: $(grep -m1 -E '^(│ )?Error' plan.log | sed 's/│ //' | cut -c1-200)"
+            exit 1
+          fi
+          terraform -chdir="$TF" show -json tfplan > plan.json
+          echo "plan ok: $(jq '.resource_changes | length' plan.json) resources"
+
+      - name: OPA policies (conftest)
+        if: steps.plan.outcome == 'success' && steps.plan.outputs.skip != 'true'
+        run: |
+          C=${{ matrix.cloud }}; E=${{ matrix.env }}
+          conftest test plan.json --policy policy/terraform --data policy/data \
+            --namespace terraform.common --namespace "terraform.$C" --no-color || true   # verdict made by report job
+          conftest test plan.json --policy policy/terraform --data policy/data \
+            --namespace terraform.common --namespace "terraform.$C" -o json > "results/conftest-$C-$E.json" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-policy-${{ matrix.cloud }}-${{ matrix.env }}
+          path: results/
+
+  report:
+    needs: [validate, policy-tests, policy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: results
+      - name: Build report
+        id: report
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          pip install --quiet pyyaml
+          set +e
+          python3 scripts/policy_report.py --results results --out report.md
+          echo "exit=$?" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Post / update PR comment
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: terraform-compliance
+          path: report.md
+      - name: Enforce
+        if: steps.report.outputs.exit != '0'
+        run: |
+          echo "::error::Terraform compliance check failed. See the PR comment or job summary."
+          exit 1

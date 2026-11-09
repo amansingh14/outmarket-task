@@ -1,0 +1,79 @@
+{{- if eq .Values.database.mode "embedded" }}
+{{- $name := printf "%s-embedded-db" (include "ib.fullname" .) -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
+{{- $password := "" -}}
+{{- if $existing }}
+{{- $password = index $existing.data "POSTGRES_PASSWORD" | b64dec -}}
+{{- else }}
+{{- $password = randAlphaNum 24 -}}
+{{- end }}
+# Ephemeral in-cluster Postgres for PR preview environments only.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  POSTGRES_PASSWORD: {{ $password | quote }}
+  {{ .Values.database.secretKey }}: postgresql+psycopg://ideas:{{ $password }}@{{ $name }}:5432/ideas
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: embedded-db
+  ports:
+    - { port: 5432, targetPort: 5432 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ $name }}
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: embedded-db
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: embedded-db
+    spec:
+      containers:
+        - name: postgres
+          image: {{ .Values.database.embedded.image }}
+          env:
+            - { name: POSTGRES_USER, value: ideas }
+            - { name: POSTGRES_DB, value: ideas }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $name }}, key: POSTGRES_PASSWORD } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "ideas", "-d", "ideas"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+      # Previews are disposable: emptyDir avoids depending on each cloud's
+      # default StorageClass (EKS >= 1.30 no longer marks one as default).
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.database.embedded.storage }}
+{{- end }}

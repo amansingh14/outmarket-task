@@ -1,0 +1,51 @@
+# Cloud-neutral defaults. Per-environment overrides are rendered by
+# `devops-ai env-profile` into deploy/helm/values/<env>.yaml.
+image:
+  registry: ghcr.io
+  owner: CHANGE_ME              # GitHub org/user; set by the pipeline
+  tag: latest
+  pullPolicy: IfNotPresent
+
+backend:
+  replicas: 2
+  resources:
+    requests: { cpu: 100m, memory: 128Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  logLevel: INFO
+
+frontend:
+  replicas: 2
+  resources:
+    requests: { cpu: 50m, memory: 64Mi }
+    limits: { cpu: 200m, memory: 128Mi }
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 70
+  service:
+    # LoadBalancer works identically on EKS (NLB/CLB) and GKE (Network LB),
+    # so no cloud-specific ingress controller is required for public access.
+    type: LoadBalancer
+    port: 80
+    annotations: {}
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+database:
+  # external: use the managed DB (RDS / Cloud SQL); URL comes from a Secret
+  #           that the pipeline creates from Terraform outputs.
+  # embedded: run a throwaway Postgres in-cluster (used by PR preview envs).
+  mode: external
+  existingSecret: idea-board-db
+  secretKey: DATABASE_URL
+  embedded:
+    image: postgres:16-alpine
+    storage: 1Gi

@@ -1,0 +1,14 @@
+# Time-boxed exceptions. A waived finding still appears in the PR report (as "waived")
+# but does not block the merge. Every waiver needs an owner, a reason and an expiry date;
+# once it expires the finding blocks again automatically.
+#
+# Adding a waiver is itself a PR, so the exception is reviewed and on record (SOC 2 CC8.1).
+#
+# waivers:
+#   - id: AWS-RDS-004                       # policy id from catalog.yaml
+#     resource: "module.database.*"         # glob on the Terraform resource address ("*" = any)
+#     environments: [production]            # optional; omit = all environments
+#     owner: "@platform-team"
+#     reason: "Migration window; re-enabled in ticket OPS-123"
+#     expires: "2027-01-31"                 # quoted YYYY-MM-DD
+waivers: []

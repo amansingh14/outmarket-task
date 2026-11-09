@@ -1,0 +1,5 @@
+Idea Board {{ .Values.image.tag }} deployed to namespace {{ .Release.Namespace }}.
+
+Public URL (may take 1-3 minutes for the cloud load balancer to provision):
+  kubectl -n {{ .Release.Namespace }} get svc {{ include "ib.fullname" . }}-frontend \
+    -o jsonpath='{.status.loadBalancer.ingress[0].ip}{.status.loadBalancer.ingress[0].hostname}'
