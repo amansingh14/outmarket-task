@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Terraform wrapper for one stack on one cloud, with remote state.
 #
-#   scripts/tf.sh <cloud> <stack> <init|plan|apply|output|destroy> [extra terraform args]
+#   scripts/tf.sh <cloud> <stack> <init|plan|apply|output|unlock|destroy> [extra terraform args]
 #
 # Cloud specifics (state backend, provider variables) come from clouds/<cloud>/terraform.sh, so this
 # script never names a cloud. Sizing comes from config/stacks/<stack>.yaml via `devops-ai render`.
@@ -38,6 +38,18 @@ case "$ACTION" in
     terraform -chdir="$TF" apply -input=false -no-color "$PLAN"   # exactly what was reviewed
     ;;
   output) terraform -chdir="$TF" output "$@" ;;
+  unlock)
+    # Recover from a run that died holding the state lock (e.g. credentials expired mid-apply).
+    # Terraform prints the holder's lock ID when it cannot acquire the lock; works for any backend.
+    out=$(terraform -chdir="$TF" plan -input=false -no-color -refresh=false -lock-timeout=0s "${VARS[@]}" 2>&1 || true)
+    id=$(sed -n 's/^ *ID: *//p' <<<"$out" | head -1)
+    if [ -z "$id" ]; then
+      echo "no stale lock on $CLOUD/$STACK"
+    else
+      echo "lock held:"; grep -E '^ *(ID|Who|Operation|Created):' <<<"$out" || true
+      terraform -chdir="$TF" force-unlock -force "$id"
+    fi
+    ;;
   destroy) terraform -chdir="$TF" destroy -input=false "${VARS[@]}" "$@" ;;
   *) echo "unknown action $ACTION" >&2; exit 2 ;;
 esac
