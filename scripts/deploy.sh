@@ -14,7 +14,9 @@
 #                      the environment (local kind cluster, tests). EXTRA_HELM_ARGS and HEALTH_URL
 #                      tweak the release for clusters without cloud load balancers.
 #
-# Exit: 0 deployed and healthy · 1 failed health check (rolled back when possible) · 2 usage/config.
+#      FORCE_DEPLOY=true redeploys even when the cluster already runs this exact release.
+#
+# Exit: 0 deployed and healthy, or unchanged · 1 failed health check (rolled back when possible) · 2 usage/config.
 set -uo pipefail
 
 ENV_NAME=${1:?usage: deploy.sh <environment> <cloud>}
@@ -83,15 +85,44 @@ frontend_url() {
   [ -n "$host" ] && echo "http://$host"
 }
 
+"$AI" delivery env-values --env "$ENV_NAME" --out "$WORK/values.yaml" >/dev/null
+
+# ------------------------------------------------------- change detection
+# Fingerprint of everything that shapes the release: chart files, rendered values, image tags, DB
+# endpoint and extra helm args. Images are tagged by source-tree hash, so the tags already change
+# exactly when app code changes. If the cluster runs this fingerprint, the release is healthy
+# (status deployed) and every deployment is fully ready, there is nothing to deploy. A new
+# cluster, a failed or rolled-back release, or broken pods always deploy. FORCE_DEPLOY=true overrides.
+log "Change detection"
+FINGERPRINT=$({
+  (cd "$ROOT/deploy/helm/idea-board" && find . -type f | LC_ALL=C sort | while read -r f; do echo "$f"; cat "$f"; done)
+  cat "$WORK/values.yaml"
+  printf '%s\n' "$IMAGE_OWNER" "$BACKEND_TAG" "$FRONTEND_TAG" "$DB_HOST" "$DB_PORT" "$ENV_NAME" \
+    "${PULL[*]-}" "${EXTRA_HELM_ARGS:-}"
+} | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()[:16])')
+RUNNING=$(helm get values "$RELEASE" -n "$NS" -o json 2>/dev/null | jq -r '.deployFingerprint // empty' 2>/dev/null)
+STATUS=$(helm status "$RELEASE" -n "$NS" -o json 2>/dev/null | jq -r '.info.status // empty' 2>/dev/null)
+READY=$(kubectl -n "$NS" get deploy -l "app.kubernetes.io/instance=$RELEASE" -o json 2>/dev/null \
+  | jq -r 'if (.items | length) > 0 and all(.items[]; (.status.readyReplicas // 0) >= .spec.replicas) then "yes" else "no" end' 2>/dev/null)
+echo "desired=$FINGERPRINT running=${RUNNING:-none} release=${STATUS:-none} ready=${READY:-no}"
+if [ "${FORCE_DEPLOY:-false}" != true ] && [ "$RUNNING" = "$FINGERPRINT" ] && [ "$STATUS" = deployed ] && [ "$READY" = yes ]; then
+  URL=$(frontend_url)
+  [ -n "${GITHUB_OUTPUT:-}" ] && echo "url=$URL" >> "$GITHUB_OUTPUT"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "### ⏸️ $ENV_NAME on $CLOUD unchanged: already running this build (${URL:-no public URL})" >> "$GITHUB_STEP_SUMMARY"
+  result unchanged healthy "$URL"
+  echo "⏸️ $ENV_NAME on $CLOUD is unchanged; skipping the deploy: ${URL:-(no public URL)}"
+  exit 0
+fi
+
 log "Baseline of the running release (for the post-deploy comparison)"
 "$AI" health-snapshot --namespace "$NS" --release "$RELEASE" --url "$(frontend_url)" --out "$WORK/baseline.json"
 
 log "helm upgrade"
-"$AI" delivery env-values --env "$ENV_NAME" --out "$WORK/values.yaml" >/dev/null
 # shellcheck disable=SC2086
 helm upgrade --install "$RELEASE" "$ROOT/deploy/helm/idea-board" -n "$NS" -f "$WORK/values.yaml" \
   --set image.owner="$IMAGE_OWNER" --set backend.image.tag="$BACKEND_TAG" --set frontend.image.tag="$FRONTEND_TAG" \
   --set database.host="$DB_HOST" --set database.port="$DB_PORT" --set environment="$ENV_NAME" \
+  --set-string deployFingerprint="$FINGERPRINT" \
   ${PULL[@]+"${PULL[@]}"} ${EXTRA_HELM_ARGS:-} --history-max 10 --wait --timeout 10m >"$WORK/helm.log" 2>&1
 HELM_RC=$?  # no pipeline: a failure must not run in a subshell that fires the EXIT trap early
 cat "$WORK/helm.log"

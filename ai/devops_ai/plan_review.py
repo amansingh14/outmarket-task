@@ -48,6 +48,28 @@ def parse(plan_json: str) -> list[Change]:
     return changes
 
 
+def has_changes(plan_json: str) -> bool:
+    """True when applying the plan would change anything: a resource or a root output."""
+    plan = json.loads(plan_json)
+    if parse(plan_json):
+        return True
+    return any(oc.get("actions", ["no-op"]) != ["no-op"] for oc in (plan.get("output_changes") or {}).values())
+
+
+def apply_matrix(matrix: dict, plan_dir: str) -> dict:
+    """Keep only the matrix entries whose saved plan (<plan_dir>/<cloud>.plan.json) changes something.
+
+    A cloud with no plan file was skipped at plan time (not configured) and is dropped too.
+    """
+    from pathlib import Path
+    keep = []
+    for entry in matrix.get("include", []):
+        p = Path(plan_dir) / f"{entry['cloud']}.plan.json"
+        if p.exists() and has_changes(p.read_text()):
+            keep.append(entry)
+    return {"include": keep}
+
+
 def destructive_stateful(changes: list[Change]) -> list[Change]:
     return [c for c in changes if c.type in STATEFUL and c.kind in ("delete", "replace")]
 

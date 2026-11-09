@@ -17,6 +17,9 @@ on:
       ref:
         type: string
         required: true
+      force:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       environment:
@@ -27,6 +30,10 @@ on:
         description: Commit SHA to deploy (default = tip of the selected branch)
         type: string
         default: ""
+      force:
+        description: Redeploy even if the cluster already runs this exact release
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -144,6 +151,7 @@ jobs:
           GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           RESULT_FILE: result/${{ matrix.cloud }}.json
+          FORCE_DEPLOY: ${{ inputs.force && 'true' || 'false' }}
         run: |
           mkdir -p result
           scripts/deploy.sh "${{ matrix.environment }}" "${{ matrix.cloud }}"
@@ -181,11 +189,12 @@ jobs:
             echo "nothing in \`$HEAD\` that \`$BASE\` lacks; no PR needed" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          deployed=$(jq -s '[.[] | select(.status == "deployed")] | length' results/*.json)
+          # "unchanged" = the cluster already runs this exact release and it is healthy: verified too.
+          deployed=$(jq -s '[.[] | select(.status == "deployed" or .status == "unchanged")] | length' results/*.json)
           total=$(jq -s 'length' results/*.json)
           {
             if [ "$KIND" = promote ] && [ "$deployed" = "$total" ]; then
-              echo "Promote **\`$HEAD\`** → **\`$BASE\`**. \`$ENVIRONMENT\` was deployed to all $total cloud(s) and passed its health check."
+              echo "Promote **\`$HEAD\`** → **\`$BASE\`**. \`$ENVIRONMENT\` is running this build on all $total cloud(s) and passed its health check (deployed now, or already running it unchanged)."
             elif [ "$KIND" = promote ]; then
               echo "Promote **\`$HEAD\`** → **\`$BASE\`**."
               echo

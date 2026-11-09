@@ -115,6 +115,15 @@ def cmd_review_plan(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_apply_matrix(a: argparse.Namespace) -> int:
+    m = plan_review.apply_matrix(json.loads(a.matrix), a.plans)
+    clouds = [e["cloud"] for e in m["include"]]
+    _outputs({"matrix": _compact(m), "any": str(bool(clouds)).lower()})
+    _emit("### Terraform apply targets\n" + (
+        "Changes on: " + ", ".join(f"`{c}`" for c in clouds) if clouds else "No cloud has changes; apply skipped."), None)
+    return 0
+
+
 def cmd_health_snapshot(a: argparse.Namespace) -> int:
     snap = health.snapshot(a.namespace, a.release, a.url)
     Path(a.out).write_text(json.dumps(snap, indent=2))
@@ -280,6 +289,11 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--stack", required=True)
     s.add_argument("--allow-destructive", action="store_true")
     s.set_defaults(fn=cmd_review_plan)
+
+    s = sub.add_parser("apply-matrix", help="filter the infra matrix to clouds whose saved plan has changes")
+    s.add_argument("--matrix", required=True, help='{"include": [{"cloud": ..., "stack": ...}]}')
+    s.add_argument("--plans", required=True, help="directory holding <cloud>.plan.json files")
+    s.set_defaults(fn=cmd_apply_matrix)
 
     s = sub.add_parser("health-snapshot", help="baseline of the current release, taken before an upgrade")
     s.add_argument("--namespace", required=True)

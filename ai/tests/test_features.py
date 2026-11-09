@@ -179,3 +179,16 @@ def test_version_skip_gate():
     assert pr.version_skips(_cluster_plan("google_container_cluster", "min_master_version", "1.30.5-gke.1", "1.33"))
     # a brand-new cluster may start at any version
     assert pr.version_skips(_cluster_plan("aws_eks_cluster", "version", None, "1.34", ("create",))) == []
+
+
+def test_apply_matrix_keeps_only_clouds_with_changes(tmp_path):
+    from devops_ai import plan_review as pr
+    noop = {"resource_changes": [{"address": "a", "type": "t", "change": {"actions": ["no-op"]}}]}
+    upd = {"resource_changes": [{"address": "b", "type": "t", "change": {"actions": ["update"]}}]}
+    out_only = {"resource_changes": [], "output_changes": {"url": {"actions": ["update"]}}}
+    (tmp_path / "aws.plan.json").write_text(json.dumps(noop))
+    (tmp_path / "gcp.plan.json").write_text(json.dumps(upd))
+    m = {"include": [{"cloud": "aws", "stack": "nonprod"}, {"cloud": "gcp", "stack": "nonprod"},
+                     {"cloud": "azure", "stack": "nonprod"}]}  # azure: no plan file (not configured)
+    assert [e["cloud"] for e in pr.apply_matrix(m, str(tmp_path))["include"]] == ["gcp"]
+    assert pr.has_changes(json.dumps(out_only)) and not pr.has_changes(json.dumps(noop))
