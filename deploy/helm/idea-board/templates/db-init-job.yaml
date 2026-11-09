@@ -1,0 +1,60 @@
+{{- if and (eq .Values.database.mode "external") .Values.database.createDatabase }}
+{{- if not (regexMatch "^[a-z_][a-z0-9_]{0,62}$" .Values.database.name) }}
+{{- fail (printf "database.name %q is not a valid identifier" .Values.database.name) }}
+{{- end }}
+# Creates this environment's database on the shared non-prod instance (idempotent).
+# Runs inside the cluster, so it reaches the private RDS / Cloud SQL endpoint the same way
+# on both clouds, without a Terraform postgres provider or a public database.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ib.fullname" . }}-db-init
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "ib.labels" . | nindent 8 }}
+        app.kubernetes.io/component: db-init
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: db-init
+          image: {{ .Values.database.initImage }}
+          env:
+            - name: ADMIN_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.existingSecret }}
+                  key: {{ .Values.database.adminSecretKey }}
+            - name: DB_NAME
+              value: {{ .Values.database.name | quote }}
+          command: ["/bin/sh", "-ec"]
+          args:
+            - |
+              exists=$(psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -tAc \
+                "SELECT 1 FROM pg_database WHERE datname = '${DB_NAME}'")
+              if [ "$exists" = "1" ]; then
+                echo "database ${DB_NAME} already exists"
+              else
+                psql "$ADMIN_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${DB_NAME}\""
+                echo "created database ${DB_NAME}"
+              fi
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 200m, memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+{{- end }}

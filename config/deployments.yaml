@@ -1,0 +1,90 @@
+# Delivery model: branches -> environments -> infrastructure stacks -> clouds.
+#
+#   feature/* ─PR─▶ development ─PR─▶ staging ─PR─▶ qa ─PR─▶ preprod ─PR─▶ production
+#                                                                 hotfix/* ─PR─▶ production
+#                                          production ─(back-merge PR)─▶ development
+#
+# Pipelines read this file (via `devops-ai delivery ...`); changing where an environment runs
+# is a one-line edit here, e.g. add `gcp` to qa.clouds.
+
+registry: ghcr.io
+
+# Terraform stacks (one cluster + one managed DB instance per cloud).
+# `apply_from`: the branch whose merges run `terraform apply` for this stack.
+# `profile`:    sizing profile in config/environments/<profile>.yaml
+stacks:
+  nonprod:
+    apply_from: development
+    profile: nonprod
+  preprod:
+    apply_from: preprod
+    profile: preprod
+  production:
+    apply_from: production
+    profile: production
+
+environments:
+  development:
+    branch: development
+    stack: nonprod
+    clouds: [aws]
+    namespace: development
+    database: ideas_development
+    create_database: true # shares the nonprod DB instance; a Helm hook creates this database
+    promote_to: staging
+    helm:
+      backend: { replicas: 1, logLevel: DEBUG }
+      frontend: { replicas: 1 }
+
+  staging:
+    branch: staging
+    stack: nonprod
+    clouds: [aws]
+    namespace: staging
+    database: ideas_staging
+    create_database: true
+    promote_to: qa
+    helm:
+      backend: { replicas: 1 }
+      frontend: { replicas: 1 }
+
+  qa:
+    branch: qa
+    stack: nonprod
+    clouds: [aws]
+    namespace: qa
+    database: ideas_qa
+    create_database: true
+    promote_to: preprod
+    helm:
+      backend: { replicas: 2 }
+      frontend: { replicas: 2 }
+
+  preprod:
+    branch: preprod
+    stack: preprod
+    clouds: [aws, gcp]
+    namespace: idea-board
+    database: ideas
+    create_database: false # dedicated instance; Terraform created the database
+    promote_to: production
+    approval: true # GitHub Environment with required reviewers
+
+  production:
+    branch: production
+    stack: production
+    clouds: [aws, gcp]
+    namespace: idea-board
+    database: ideas
+    create_database: false
+    approval: true
+
+promotion:
+  # Short-lived branches and where they may merge.
+  feature_prefixes: [feature/, fix/, chore/, docs/, refactor/, test/, dependabot/, renovate/]
+  feature_target: development
+  hotfix_prefix: hotfix/
+  hotfix_target: production
+  # After production changes that development lacks (a hotfix), open a PR back to development.
+  backmerge_from: production
+  backmerge_to: development

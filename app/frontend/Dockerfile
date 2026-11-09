@@ -6,8 +6,13 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-# Unprivileged nginx listens on 8080 and runs as a non-root user.
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+# Unprivileged nginx (current stable line, 1.30) listens on 8080 and runs as a non-root user.
+FROM nginxinc/nginx-unprivileged:1.30-alpine
+# Pick up Alpine security fixes published after the base image was built
+# (Trivy in CI fails the build on fixable CRITICAL CVEs).
+USER root
+RUN apk upgrade --no-cache
+USER 101
 ENV BACKEND_URL=http://backend:8000
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build /app/dist /usr/share/nginx/html

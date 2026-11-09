@@ -1,0 +1,24 @@
+# Sizing for the preprod stack: production's shape at lower scale, used for release sign-off.
+environment: preprod
+tier: preprod
+node_size: medium
+node_min: 2
+node_desired: 2
+node_max: 4
+spot_nodes: false
+db_size: medium
+db_storage_gb: 20
+db_high_availability: false
+deletion_protection: true
+zonal_control_plane: false
+backend_replicas: 2
+frontend_replicas: 2
+autoscaling: true
+hpa_max_replicas: 4
+hpa_cpu_target: 65
+log_level: INFO
+monthly_budget_usd: null
+rationale: >-
+  Same topology as production (regional control plane, on-demand nodes, dedicated database,
+  autoscaling, two replicas per tier) so releases are signed off on a production-shaped system,
+  but single-AZ database and fewer nodes to keep cost down.

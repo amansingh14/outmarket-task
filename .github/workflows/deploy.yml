@@ -1,0 +1,319 @@
+# Deployment pipeline.
+#
+# Trigger: CI succeeded on a push to an environment branch (or a manual run).
+#   resolve  branch -> environment, clouds, namespace (config/deployments.yaml)
+#   images   make sure the content-addressed images exist (reuses CI's images; builds only if missing)
+#   deploy   per cloud, inside the GitHub Environment of the same name (approvals for preprod/production):
+#            stack outputs -> kubeconfig -> DB secret -> helm upgrade -> AI health check (+ auto rollback)
+#   promote  open/update the PR to the next branch (development -> staging -> qa -> preprod -> production),
+#            or the back-merge PR production -> development after a hotfix.
+#
+# Note: workflow_run always uses this file as it exists on the repository's default branch.
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [development, staging, qa, preprod, production]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to (re)deploy
+        type: choice
+        options: [development, staging, qa, preprod, production]
+      ref:
+        description: Commit SHA or branch (default = the environment's branch)
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  pull-requests: write
+
+jobs:
+  resolve:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      environment: ${{ steps.r.outputs.environment }}
+      branch: ${{ steps.r.outputs.branch }}
+      matrix: ${{ steps.r.outputs.matrix }}
+      promote_to: ${{ steps.r.outputs.promote_to }}
+      backmerge_to: ${{ steps.r.outputs.backmerge_to }}
+      sha: ${{ steps.pin.outputs.sha }}
+    steps:
+      - id: ref
+        env:
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          INPUT_REF: ${{ inputs.ref || inputs.environment }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            echo "sha=$RUN_SHA" >> "$GITHUB_OUTPUT"
+            echo "branch=$RUN_BRANCH" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$INPUT_REF" >> "$GITHUB_OUTPUT"
+            echo "branch=" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.sha }}
+      - name: Pin the exact commit
+        id: pin
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+      - id: r
+        run: |
+          devops-ai delivery resolve --branch "${{ steps.ref.outputs.branch }}" --environment "${{ inputs.environment }}"
+      - name: Summary
+        run: |
+          {
+            echo "## 🚀 Deploy \`${{ steps.r.outputs.environment || 'nothing' }}\`"
+            echo "commit \`${{ steps.pin.outputs.sha }}\` · stack \`${{ steps.r.outputs.stack }}\` · next: \`${{ steps.r.outputs.promote_to || '–' }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  images:
+    needs: resolve
+    if: needs.resolve.outputs.environment != ''
+    uses: ./.github/workflows/build-images.yml
+    with:
+      push: true
+      ref: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit
+
+  deploy:
+    name: deploy (${{ matrix.environment }} / ${{ matrix.cloud }})
+    needs: [resolve, images]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    environment:
+      name: ${{ matrix.environment }}
+      url: ${{ steps.url.outputs.url }}
+    concurrency:
+      group: deploy-${{ matrix.environment }}-${{ matrix.cloud }}
+      cancel-in-progress: false
+    env:
+      CLOUD: ${{ matrix.cloud }}
+      STACK: ${{ matrix.stack }}
+      NS: ${{ matrix.namespace }}
+      DB_NAME: ${{ matrix.database }}
+      RELEASE: idea-board
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      TF_STATE_BUCKET_AWS: ${{ vars.TF_STATE_BUCKET_AWS }}
+      TF_STATE_BUCKET_GCP: ${{ vars.TF_STATE_BUCKET_GCP }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+      - name: Is this cloud configured?
+        id: cfg
+        run: |
+          ok=true
+          if [ "$CLOUD" = aws ]; then
+            [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ] && [ -n "$TF_STATE_BUCKET_AWS" ] || ok=false
+            need="AWS_DEPLOY_ROLE_ARN, TF_STATE_BUCKET_AWS"
+          else
+            [ -n "${{ vars.GCP_WIF_PROVIDER }}" ] && [ -n "${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}" ] \
+              && [ -n "$TF_STATE_BUCKET_GCP" ] && [ -n "$GCP_PROJECT_ID" ] || ok=false
+            need="GCP_WIF_PROVIDER, GCP_DEPLOY_SERVICE_ACCOUNT, TF_STATE_BUCKET_GCP, GCP_PROJECT_ID"
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+          mkdir -p result
+          if [ "$ok" != true ]; then
+            echo "### ⏭️ $CLOUD not configured: set repo variables $need" >> "$GITHUB_STEP_SUMMARY"
+            jq -n --arg c "$CLOUD" --arg why "not configured ($need)" \
+              '{cloud: $c, status: "skipped", reason: $why}' > "result/$CLOUD.json"
+          fi
+
+      - uses: hashicorp/setup-terraform@v3
+        if: steps.cfg.outputs.ok == 'true'
+        with:
+          terraform_version: 1.12.2
+          terraform_wrapper: false
+      - uses: azure/setup-helm@v4
+        if: steps.cfg.outputs.ok == 'true'
+        with:
+          version: v3.16.3
+      - uses: actions/setup-python@v5
+        if: steps.cfg.outputs.ok == 'true'
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+        if: steps.cfg.outputs.ok == 'true'
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        if: steps.cfg.outputs.ok == 'true' && matrix.cloud == 'aws'
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - uses: google-github-actions/auth@v2
+        if: steps.cfg.outputs.ok == 'true' && matrix.cloud == 'gcp'
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.cfg.outputs.ok == 'true' && matrix.cloud == 'gcp'
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Connect to the stack's cluster
+        if: steps.cfg.outputs.ok == 'true'
+        run: |
+          scripts/tf.sh "$CLOUD" "$STACK" output -json > /tmp/tfout.json
+          ADMIN=$(jq -r .database_admin_url.value /tmp/tfout.json)
+          PASS=$(python3 -c 'import sys,urllib.parse as u; print(u.urlsplit(sys.argv[1]).password or "")' "$ADMIN")
+          echo "::add-mask::$PASS"; echo "::add-mask::$ADMIN"
+          eval "$(jq -r .kubeconfig_command.value /tmp/tfout.json)"
+          kubectl version -o json | jq -r '"cluster version: " + .serverVersion.gitVersion'
+
+      - name: Namespace and secrets
+        if: steps.cfg.outputs.ok == 'true'
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          ADMIN=$(jq -r .database_admin_url.value /tmp/tfout.json)
+          # Same server/credentials, this environment's own database, SQLAlchemy driver prefix.
+          APP_URL=$(python3 - "$ADMIN" "$DB_NAME" <<'PY'
+          import sys, urllib.parse as u
+          p = u.urlsplit(sys.argv[1])
+          print(u.urlunsplit(("postgresql+psycopg", p.netloc, "/" + sys.argv[2], p.query, "")))
+          PY
+          )
+          kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n "$NS" create secret generic idea-board-db \
+            --from-literal=DATABASE_URL="$APP_URL" --from-literal=ADMIN_DATABASE_URL="$ADMIN" \
+            --dry-run=client -o yaml | kubectl apply -f -
+          if [ -n "$GHCR_PULL_TOKEN" ]; then
+            kubectl -n "$NS" create secret docker-registry ghcr-pull --docker-server=ghcr.io \
+              --docker-username="${{ github.repository_owner }}" --docker-password="$GHCR_PULL_TOKEN" \
+              --dry-run=client -o yaml | kubectl apply -f -
+            echo "PULL_SECRET_ARGS=--set image.pullSecrets[0]=ghcr-pull" >> "$GITHUB_ENV"
+          fi
+
+      - name: Helm upgrade
+        id: helm
+        if: steps.cfg.outputs.ok == 'true'
+        continue-on-error: true # the health check below decides and rolls back
+        run: |
+          devops-ai delivery env-values --env "${{ matrix.environment }}" --out build/values.yaml
+          helm upgrade --install "$RELEASE" deploy/helm/idea-board -n "$NS" \
+            -f build/values.yaml \
+            --set image.owner="${{ needs.images.outputs.owner }}" \
+            --set backend.image.tag="${{ needs.images.outputs.backend_tag }}" \
+            --set frontend.image.tag="${{ needs.images.outputs.frontend_tag }}" \
+            ${PULL_SECRET_ARGS:-} \
+            --history-max 10 --wait --timeout 10m
+
+      - name: Public URL
+        id: url
+        if: steps.cfg.outputs.ok == 'true'
+        run: |
+          for i in $(seq 1 60); do
+            host=$(kubectl -n "$NS" get svc "$RELEASE-frontend" \
+              -o jsonpath='{.status.loadBalancer.ingress[0].hostname}{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+            [ -n "$host" ] && break; sleep 5
+          done
+          [ -n "$host" ] && echo "url=http://$host" >> "$GITHUB_OUTPUT" || echo "::warning::no load balancer address yet"
+
+      - name: AI health check (auto-rollback)
+        id: health
+        if: steps.cfg.outputs.ok == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          set +e
+          devops-ai health-check --namespace "$NS" --release "$RELEASE" \
+            ${{ steps.url.outputs.url && format('--url {0}', steps.url.outputs.url) || '' }} \
+            --rollback --report health.json
+          rc=$?
+          verdict=$(jq -r .verdict.verdict health.json 2>/dev/null || echo unknown)
+          status=deployed
+          if [ "$rc" -ne 0 ] || [ "${{ steps.helm.outcome }}" != success ]; then status=rolled_back; fi
+          jq -n --arg c "$CLOUD" --arg s "$status" --arg v "$verdict" --arg u "${{ steps.url.outputs.url }}" \
+            --arg b "${{ needs.images.outputs.backend_tag }}" --arg f "${{ needs.images.outputs.frontend_tag }}" \
+            '{cloud: $c, status: $s, verdict: $v, url: $u, backend: $b, frontend: $f}' > "result/$CLOUD.json"
+          [ "$status" = deployed ] || { echo "::error::deployment rolled back (helm: ${{ steps.helm.outcome }}, verdict: $verdict)"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deploy-${{ matrix.environment }}-${{ matrix.cloud }}
+          path: result/
+
+  promote:
+    needs: [resolve, deploy]
+    if: needs.resolve.outputs.promote_to != '' || needs.resolve.outputs.backmerge_to != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # PRs opened with GITHUB_TOKEN don't trigger CI; a PAT/App token makes promotion PRs testable.
+          token: ${{ secrets.PROMOTION_TOKEN || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deploy-*
+          merge-multiple: true
+          path: results
+      - name: Open or update promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.PROMOTION_TOKEN || github.token }}
+          ENVIRONMENT: ${{ needs.resolve.outputs.environment }}
+          HEAD: ${{ needs.resolve.outputs.branch }}
+          BASE: ${{ needs.resolve.outputs.promote_to || needs.resolve.outputs.backmerge_to }}
+          KIND: ${{ needs.resolve.outputs.promote_to && 'promote' || 'back-merge' }}
+        run: |
+          git fetch origin "$BASE" "$HEAD"
+          if git diff --quiet "origin/$BASE...origin/$HEAD"; then
+            echo "nothing in \`$HEAD\` that \`$BASE\` lacks; no PR needed" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          {
+            deployed=$(jq -s '[.[] | select(.status == "deployed")] | length' results/*.json)
+            total=$(jq -s 'length' results/*.json)
+            if [ "$KIND" = promote ] && [ "$deployed" = "$total" ]; then
+              echo "Promote **\`$HEAD\`** → **\`$BASE\`**. \`$ENVIRONMENT\` was deployed to all $total cloud(s) and passed its health check."
+            elif [ "$KIND" = promote ]; then
+              echo "Promote **\`$HEAD\`** → **\`$BASE\`**."
+              echo
+              echo "> [!WARNING]"
+              echo "> \`$ENVIRONMENT\` was deployed to only $deployed of $total cloud(s); the rest were skipped (see the table). CI passed, but this change has **not** been verified in a running \`$ENVIRONMENT\` environment."
+            else
+              echo "Back-merge **\`$HEAD\`** → **\`$BASE\`** so the production hotfix isn't lost on the next release."
+            fi
+            echo
+            echo "### \`$ENVIRONMENT\` deployment"
+            echo "| Cloud | Status | Health | URL | backend | frontend |"
+            echo "|---|---|---|---|---|---|"
+            for f in results/*.json; do
+              jq -r '"| \(.cloud) | \(.status) | \(.verdict // "–") | \(.url // .reason // "–") | `\(.backend // "–")` | `\(.frontend // "–")` |"' "$f"
+            done
+            echo
+            echo "### Changes"
+            git log --no-merges --format='- %s (%h, %an)' "origin/$BASE..origin/$HEAD" | head -50
+            echo
+            echo "_Images are content-addressed: what was tested in \`$ENVIRONMENT\` is exactly what \`$BASE\` will run._"
+            echo "_Opened by the [deploy pipeline](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})._"
+          } > body.md
+          title="$( [ "$KIND" = promote ] && echo "Promote $HEAD → $BASE" || echo "Back-merge $HEAD → $BASE" )"
+          existing=$(gh pr list --base "$BASE" --head "$HEAD" --state open --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "$title" --body-file body.md
+            echo "updated PR #$existing" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            gh pr create --base "$BASE" --head "$HEAD" --title "$title" --body-file body.md --label promotion \
+              || gh pr create --base "$BASE" --head "$HEAD" --title "$title" --body-file body.md
+            echo "opened promotion PR $HEAD → $BASE" | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
