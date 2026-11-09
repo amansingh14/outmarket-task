@@ -109,6 +109,20 @@ fi
 echo "${URL:-<no load balancer address>}"
 [ -n "${GITHUB_OUTPUT:-}" ] && echo "url=$URL" >> "$GITHUB_OUTPUT"
 
+# A brand-new cloud load balancer answers before it routes reliably (GCP: 1-3 min of timeouts).
+# Wait for 5 consecutive 200s (max ~4 min) so the health check judges the app, not LB warm-up.
+# This only delays the probes; a release that never becomes reachable still fails them.
+if [ -n "$URL" ] && [ -z "${HEALTH_URL:-}" ]; then
+  log "Waiting for the load balancer to route"
+  ok=0
+  for _ in $(seq 1 80); do
+    if [ "$(curl -s -o /dev/null -m 5 -w '%{http_code}' "$URL/" || true)" = 200 ]; then ok=$((ok + 1)); else ok=0; fi
+    [ "$ok" -ge 5 ] && break
+    sleep 3
+  done
+  if [ "$ok" -ge 5 ]; then echo "routing"; else echo "still not routing reliably; the health check will judge it"; fi
+fi
+
 log "AI health check"
 HC=(--namespace "$NS" --release "$RELEASE" --baseline "$WORK/baseline.json" --rollback --report "$WORK/health.json")
 [ -n "$URL" ] && HC+=(--url "$URL")

@@ -28,6 +28,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, dataclass, field
 from typing import Literal
 
@@ -199,7 +200,11 @@ def collect(namespace: str, release: str, url: str | None, probe_requests: int, 
     events = _run(["kubectl", "get", "events", "-n", namespace, "--field-selector", "type=Warning",
                    "--sort-by=.lastTimestamp", "-o",
                    "custom-columns=AGE:.lastTimestamp,REASON:.reason,OBJECT:.involvedObject.name,MSG:.message",
-                   "--no-headers"]).splitlines()[-30:]
+                   "--no-headers"]).splitlines()
+    # Events outlive their cause (kept ~1h); drop ones older than this deploy (helm waits <= 10 min)
+    # so an earlier failure doesn't steer the analysis. ISO-8601 UTC timestamps compare as strings.
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    events = [e for e in events if not e[:1].isdigit() or e.split()[0] >= cutoff][-30:]
 
     logs: dict[str, str] = {}
     for p in app_pods[:6]:
