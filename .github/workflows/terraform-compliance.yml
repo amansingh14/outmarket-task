@@ -165,8 +165,9 @@ jobs:
         run: |
           C=${{ matrix.cloud }}; S=${{ matrix.stack }}
           status() { jq -n --arg s "$1" --arg r "$2" '{status: $s, reason: $r}' > "results/status-$C-$S.json"; }
-          scripts/policy-check.sh "$C" "$S" --json-out "results/conftest-$C-$S.json" 2>plan.err
-          rc=$?
+          # Steps run under `bash -e`; capture the exit code instead of letting it abort the step.
+          rc=0
+          scripts/policy-check.sh "$C" "$S" --json-out "results/conftest-$C-$S.json" 2>plan.err || rc=$?
           case $rc in
             0|1) echo "evaluated (rc=$rc; the report job decides)";;
             3) rm -f "results/conftest-$C-$S.json"; status skipped "$(tail -1 plan.err) (set the plan identity for $C)";;

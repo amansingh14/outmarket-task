@@ -41,9 +41,11 @@ jobs:
           ref: ${{ inputs.ref || github.sha }}
       - id: t
         run: |
-          echo "backend=src-$(git rev-parse HEAD:app/backend | cut -c1-12)"   >> "$GITHUB_OUTPUT"
-          echo "frontend=src-$(git rev-parse HEAD:app/frontend | cut -c1-12)" >> "$GITHUB_OUTPUT"
-          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          {
+            echo "backend=src-$(git rev-parse HEAD:app/backend | cut -c1-12)"
+            echo "frontend=src-$(git rev-parse HEAD:app/frontend | cut -c1-12)"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
 
   build:
@@ -105,7 +107,7 @@ jobs:
           # mode=1777 mirrors the chart's emptyDir volumes (world-writable), which nginx (uid 101) needs.
           docker run -d --name fe --read-only --tmpfs /tmp:mode=1777 --tmpfs /etc/nginx/conf.d:mode=1777 \
             -e BACKEND_URL=http://127.0.0.1:9 -p 18080:8080 "$IMAGE:$TAG"
-          for i in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/healthz && break; sleep 1; done
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/healthz && break; sleep 1; done
           curl -fsS http://127.0.0.1:18080/ | grep -q '<div id="root">'
           docker rm -f fe >/dev/null
           echo "frontend image: serves the SPA on a read-only root filesystem" >> "$GITHUB_STEP_SUMMARY"
