@@ -13,8 +13,9 @@ variable "single_nat_gateway" {
   default     = true
 }
 variable "flow_log_retention_days" {
-  type    = number
-  default = 90
+  description = "CloudWatch retention for VPC flow logs (audit evidence; keep >= 90 days)."
+  type        = number
+  default     = 90
 }
 variable "tags" {
   type    = map(string)
