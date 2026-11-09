@@ -5,18 +5,12 @@
 #   policy        plan the full desired state -> conftest (OPA)  (per cloud x environment)
 #   report        one sticky PR comment with every control, fails the check if anything blocks
 #
-# Mark the "Terraform compliance / report" check as required in branch protection.
+# Runs on every PR so "report" can be a required check (a path-filtered workflow would never
+# report on app-only PRs and block them forever); the heavy jobs only run when infra changed.
 name: Terraform compliance
 
 on:
   pull_request:
-    paths:
-      - "infra/terraform/**"
-      - "policy/**"
-      - "config/environments/**"
-      - "scripts/policy_report.py"
-      - "scripts/policy-check.sh"
-      - ".github/workflows/terraform-compliance.yml"
   workflow_dispatch:
 
 permissions:
@@ -36,8 +30,30 @@ env:
   TF_PLUGIN_CACHE_DIR: ${{ github.workspace }}/.terraform-plugin-cache
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      infra: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.f.outputs.infra }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: f
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            infra:
+              - "infra/terraform/**"
+              - "policy/**"
+              - "config/environments/**"
+              - "config/deployments.yaml"
+              - "scripts/policy_report.py"
+              - "scripts/policy-check.sh"
+              - ".github/workflows/terraform-compliance.yml"
+
   validate:
     name: validate (${{ matrix.cloud }})
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -69,6 +85,8 @@ jobs:
           path: results/
 
   policy-tests:
+    needs: changes
+    if: needs.changes.outputs.infra == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -96,7 +114,7 @@ jobs:
       fail-fast: false
       matrix:
         cloud: [aws, gcp]
-        env: [staging, production]
+        env: [nonprod, preprod, production] # infrastructure stacks (config/deployments.yaml)
     env:
       AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
       GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
@@ -182,34 +200,40 @@ jobs:
           path: results/
 
   report:
-    needs: [validate, policy-tests, policy]
+    needs: [changes, validate, policy-tests, policy]
     if: always()
     runs-on: ubuntu-latest
     steps:
+      - name: No infrastructure changes
+        if: needs.changes.outputs.infra != 'true'
+        run: echo "No Terraform/policy changes in this PR; compliance check not needed." >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.infra == 'true'
       - uses: actions/download-artifact@v4
+        if: needs.changes.outputs.infra == 'true'
         with:
           pattern: results-*
           merge-multiple: true
           path: results
       - name: Build report
         id: report
+        if: needs.changes.outputs.infra == 'true'
         env:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           pip install --quiet pyyaml
           set +e
-          python3 scripts/policy_report.py --results results --out report.md
+          python3 scripts/policy_report.py --results results --envs nonprod,preprod,production --out report.md
           echo "exit=$?" >> "$GITHUB_OUTPUT"
           cat report.md >> "$GITHUB_STEP_SUMMARY"
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: needs.changes.outputs.infra == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: terraform-compliance
           path: report.md
       - name: Enforce
-        if: steps.report.outputs.exit != '0'
+        if: needs.changes.outputs.infra == 'true' && steps.report.outputs.exit != '0'
         run: |
           echo "::error::Terraform compliance check failed. See the PR comment or job summary."
           exit 1

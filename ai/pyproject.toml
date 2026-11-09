@@ -14,7 +14,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff>=0.8"]
+# Pinned so CI lints with the same rules as local runs (newer ruff releases widen the defaults).
+dev = ["pytest==8.3.4", "ruff==0.8.4"]
 
 [project.scripts]
 devops-ai = "devops_ai.cli:main"

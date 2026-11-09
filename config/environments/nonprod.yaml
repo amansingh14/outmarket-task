@@ -1,0 +1,26 @@
+# Sizing for the shared non-prod stack (hosts development, staging and qa).
+# Review changes in a PR; `devops-ai env-profile` can propose a new version from a goal.
+environment: nonprod
+tier: staging
+node_size: small
+node_min: 2
+node_desired: 2
+node_max: 4
+spot_nodes: true
+db_size: small
+db_storage_gb: 20
+db_high_availability: false
+deletion_protection: false
+zonal_control_plane: true
+backend_replicas: 1
+frontend_replicas: 1
+autoscaling: false
+hpa_max_replicas: 3
+hpa_cpu_target: 75
+log_level: INFO
+monthly_budget_usd: null
+rationale: >-
+  One zonal cluster on spot nodes and one single-AZ micro database instance are shared by
+  development, staging and qa (a namespace and a database each). Cheapest layout that still
+  exercises the real managed database; per-environment replica counts are set in
+  config/deployments.yaml.

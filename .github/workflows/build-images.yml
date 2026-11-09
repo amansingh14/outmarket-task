@@ -1,0 +1,124 @@
+# Reusable: build, scan and (optionally) push the app images.
+#
+# Build once, promote everywhere: each image is tagged with the git *tree hash of its own source
+# directory* (src-<hash>). A promotion merge (development -> staging -> ...) that doesn't change
+# app/backend keeps the same tree hash, so the exact image QA tested is the one production runs.
+# Existing tags are never rebuilt.
+name: Build images
+
+on:
+  workflow_call:
+    inputs:
+      push:
+        type: boolean
+        default: false
+      ref:
+        type: string
+        default: ""
+    outputs:
+      backend_tag:
+        value: ${{ jobs.tags.outputs.backend }}
+      frontend_tag:
+        value: ${{ jobs.tags.outputs.frontend }}
+      owner:
+        value: ${{ jobs.tags.outputs.owner }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  tags:
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.t.outputs.backend }}
+      frontend: ${{ steps.t.outputs.frontend }}
+      owner: ${{ steps.t.outputs.owner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - id: t
+        run: |
+          echo "backend=src-$(git rev-parse HEAD:app/backend | cut -c1-12)"   >> "$GITHUB_OUTPUT"
+          echo "frontend=src-$(git rev-parse HEAD:app/frontend | cut -c1-12)" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          cat "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.component }})
+    needs: tags
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    env:
+      IMAGE: ghcr.io/${{ needs.tags.outputs.owner }}/idea-board-${{ matrix.component }}
+      TAG: ${{ matrix.component == 'backend' && needs.tags.outputs.backend || needs.tags.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: inputs.push
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Already built?
+        id: exists
+        run: |
+          if [ "${{ inputs.push }}" = "true" ] && docker buildx imagetools inspect "$IMAGE:$TAG" >/dev/null 2>&1; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "### ♻️ \`$IMAGE:$TAG\` already exists, reusing it (no rebuild)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build (local, for scanning)
+        if: steps.exists.outputs.found != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: app/${{ matrix.component }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: APP_VERSION=${{ env.TAG }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
+
+      - name: Vulnerability scan (fixable CRITICAL fails the build)
+        if: steps.exists.outputs.found != 'true'
+        # Pinned to the commit behind tag v0.36.0: a moved tag can't change what runs here.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Push
+        if: inputs.push && steps.exists.outputs.found != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: app/${{ matrix.component }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ env.TAG }}
+          build-args: APP_VERSION=${{ env.TAG }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
+
+      - name: Add commit alias tag
+        if: inputs.push
+        run: |
+          SHA=$(git rev-parse HEAD | cut -c1-12)
+          docker buildx imagetools create -t "$IMAGE:sha-$SHA" "$IMAGE:$TAG"
+          echo "pushed/aliased \`$IMAGE:$TAG\` as \`sha-$SHA\`" >> "$GITHUB_STEP_SUMMARY"
