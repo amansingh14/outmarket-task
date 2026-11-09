@@ -24,7 +24,7 @@ environments:
   development:
     branch: development
     stack: nonprod
-    clouds: [aws]
+    clouds: [aws, gcp] # both clouds, so the shared nonprod stack is exercised on AWS and GCP
     namespace: development
     database: ideas_development
     create_database: true # shares the nonprod DB instance; the provisioning hook creates it
