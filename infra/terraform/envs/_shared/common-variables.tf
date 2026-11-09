@@ -28,7 +28,7 @@ variable "region" {
 variable "kubernetes_version" {
   description = "Used on AWS; GKE follows its release channel."
   type        = string
-  default     = "1.31"
+  default     = "1.34"
 }
 
 variable "node_size" {
