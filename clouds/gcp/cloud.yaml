@@ -1,0 +1,20 @@
+# Cloud plugin: everything the pipeline needs to know about GCP, outside Terraform itself.
+name: gcp
+display: Google Cloud
+kubernetes: Google Kubernetes Engine
+database: Cloud SQL for PostgreSQL
+terraform_root: infra/terraform/envs/gcp
+
+github_vars:
+  deploy: [GCP_WIF_PROVIDER, GCP_DEPLOY_SERVICE_ACCOUNT, TF_STATE_BUCKET_GCP, GCP_PROJECT_ID, GCP_PROJECT_NUMBER]
+  plan: [] # the GCP root has no data sources, so compliance plans work without credentials
+
+pricing:
+  node: { small: 24.5, medium: 48.9, large: 97.8 } # e2-medium / e2-standard-2 / e2-standard-4
+  database: { small: 7.7, medium: 80.7, large: 101.1 } # db-f1-micro / db-custom-2-4096 / db-custom-2-8192
+  database_storage_per_gb: 0.17
+  spot_discount: 0.70
+  control_plane: { zonal: 0.0, regional: 73.0 } # free tier covers one zonal cluster
+  nat_gateway: 32.0
+  nat_gateways_when_ha: 1 # Cloud NAT is regional
+  load_balancer: 18.3

@@ -1,21 +1,20 @@
 # Infrastructure pipeline: terraform plan -> AI risk review + destructive gate -> approved apply.
 #
-#   push to development  -> nonprod stack    (shared by development, staging, qa)  AWS
-#   push to preprod      -> preprod stack                                          AWS + GCP
-#   push to production   -> production stack                                       AWS + GCP
-#   manual run           -> any stack, plan only or plan + apply
-#
-# Applies run inside the GitHub Environment `infra-<stack>`; give infra-preprod and
-# infra-production required reviewers so nobody applies to them without approval.
+# Called by CI when a push to development / preprod / production changes infrastructure (that branch
+# owns the nonprod / preprod / production stack), or run by hand for any stack.
+# Applies run inside the GitHub Environment `infra-<stack>`; infra-preprod and infra-production
+# carry required reviewers, so nobody applies to them without approval.
 name: Infrastructure
 
 on:
-  push:
-    branches: [development, preprod, production]
-    paths:
-      - "infra/terraform/**"
-      - "config/environments/**"
-      - "config/deployments.yaml"
+  workflow_call:
+    inputs:
+      stack:
+        type: string
+        required: true
+      action:
+        type: string
+        default: apply
   workflow_dispatch:
     inputs:
       stack:
@@ -35,7 +34,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: infra-${{ inputs.stack || github.ref_name }}
+  group: infra-${{ inputs.stack }}
   cancel-in-progress: false
 
 env:
@@ -43,6 +42,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
   GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
   TF_STATE_BUCKET_AWS: ${{ vars.TF_STATE_BUCKET_AWS }}
   TF_STATE_BUCKET_GCP: ${{ vars.TF_STATE_BUCKET_GCP }}
   TF_VAR_admin_principal_arns: ${{ vars.EKS_ADMIN_PRINCIPAL_ARNS || '[]' }}
@@ -51,72 +51,71 @@ jobs:
   resolve:
     runs-on: ubuntu-latest
     outputs:
-      stack: ${{ steps.r.outputs.stack }}
       matrix: ${{ steps.r.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install --quiet ./ai
       - id: r
-        run: devops-ai delivery infra --branch "${{ github.ref_name }}" --stack "${{ inputs.stack }}"
+        env:
+          STACK: ${{ inputs.stack }}
+        run: devops-ai delivery infra --stack "$STACK"
 
   plan:
     name: plan (${{ matrix.stack }} / ${{ matrix.cloud }})
     needs: resolve
-    if: needs.resolve.outputs.stack != ''
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     outputs:
-      configured: ${{ steps.cfg.outputs.ok }}
+      configured: ${{ steps.ready.outputs.ok }}
     steps:
-      - uses: actions/checkout@v4
-      - id: cfg
-        run: |
-          if [ "${{ matrix.cloud }}" = aws ]; then
-            [ -n "${{ vars.AWS_DEPLOY_ROLE_ARN }}" ] && [ -n "$TF_STATE_BUCKET_AWS" ] && ok=true || ok=false
-          else
-            [ -n "${{ vars.GCP_WIF_PROVIDER }}" ] && [ -n "$TF_STATE_BUCKET_GCP" ] && [ -n "$GCP_PROJECT_ID" ] && ok=true || ok=false
-          fi
-          echo "ok=$ok" >> "$GITHUB_OUTPUT"
-          [ "$ok" = true ] || echo "### ⏭️ ${{ matrix.cloud }} not configured; skipping plan (see docs/delivery.md)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: hashicorp/setup-terraform@v3
-        if: steps.cfg.outputs.ok == 'true'
-        with:
-          terraform_version: 1.12.2
-          terraform_wrapper: false
-      - uses: actions/setup-python@v5
-        if: steps.cfg.outputs.ok == 'true'
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install --quiet ./ai
-        if: steps.cfg.outputs.ok == 'true'
-      - uses: aws-actions/configure-aws-credentials@v4
-        if: steps.cfg.outputs.ok == 'true' && matrix.cloud == 'aws'
+      - id: auth
+        uses: ./.github/actions/cloud-auth
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: google-github-actions/auth@v2
-        if: steps.cfg.outputs.ok == 'true' && matrix.cloud == 'gcp'
+          cloud: ${{ matrix.cloud }}
+          aws-deploy-role: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          gcp-workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp-deploy-service-account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - id: ready
+        env:
+          REPO_VARS: ${{ toJSON(vars) }}
+        run: |
+          missing=""
+          for v in $(devops-ai delivery clouds --cloud "${{ matrix.cloud }}" --purpose deploy | sed -n 's/^vars=//p'); do
+            [ -n "$(jq -r --arg v "$v" '.[$v] // empty' <<<"$REPO_VARS")" ] || missing="$missing $v"
+          done
+          if [ -z "$missing" ] && [ "${{ steps.auth.outputs.configured }}" = true ]; then ok=true; else ok=false
+            echo "### ⏭️ ${{ matrix.cloud }} not configured; skipping (missing:${missing:- identity})" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        if: steps.ready.outputs.ok == 'true'
         with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          terraform_version: 1.12.2
+          terraform_wrapper: false
       - name: terraform plan
-        if: steps.cfg.outputs.ok == 'true'
+        if: steps.ready.outputs.ok == 'true'
         run: scripts/tf.sh "${{ matrix.cloud }}" "${{ matrix.stack }}" plan
       - name: AI plan review + destructive-change gate
-        if: steps.cfg.outputs.ok == 'true'
+        if: steps.ready.outputs.ok == 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           devops-ai review-plan --plan "build/${{ matrix.stack }}/${{ matrix.cloud }}.plan.json" \
-            --cloud "${{ matrix.cloud }}" --env "${{ matrix.stack }}" \
+            --cloud "${{ matrix.cloud }}" --stack "${{ matrix.stack }}" \
             ${{ inputs.allow_destructive && '--allow-destructive' || '' }}
-      - uses: actions/upload-artifact@v4
-        if: steps.cfg.outputs.ok == 'true'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.ready.outputs.ok == 'true'
         with:
           name: tfplan-${{ matrix.stack }}-${{ matrix.cloud }}
           path: build/${{ matrix.stack }}/
@@ -125,38 +124,33 @@ jobs:
   apply:
     name: apply (${{ matrix.stack }} / ${{ matrix.cloud }})
     needs: [resolve, plan]
-    if: >-
-      needs.plan.outputs.configured == 'true' &&
-      (github.event_name == 'push' || inputs.action == 'apply')
+    if: needs.plan.outputs.configured == 'true' && inputs.action == 'apply'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 1 # one cloud at a time; a broken apply stops before touching the second cloud
+      max-parallel: 1 # one cloud at a time; a broken apply stops before touching the next cloud
       matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
     environment: infra-${{ matrix.stack }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
         with:
           terraform_version: 1.12.2
           terraform_wrapper: false
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: "3.12"
       - run: pip install --quiet ./ai
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tfplan-${{ matrix.stack }}-${{ matrix.cloud }}
           path: build/${{ matrix.stack }}/
-      - uses: aws-actions/configure-aws-credentials@v4
-        if: matrix.cloud == 'aws'
+      - uses: ./.github/actions/cloud-auth
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - uses: google-github-actions/auth@v2
-        if: matrix.cloud == 'gcp'
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          cloud: ${{ matrix.cloud }}
+          aws-deploy-role: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          gcp-workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp-deploy-service-account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - name: terraform apply (the reviewed plan, nothing else)
         run: scripts/tf.sh "${{ matrix.cloud }}" "${{ matrix.stack }}" apply

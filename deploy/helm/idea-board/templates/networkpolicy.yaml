@@ -1,0 +1,91 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $inst := .Release.Name -}}
+# Enforced by the EKS VPC CNI network-policy agent / GKE Dataplane V2 (see Terraform + policies
+# AWS-EKS-006 / GKE-009). Health checks read /metrics via `kubectl port-forward`, which enters the
+# pod's network namespace through the kubelet and is not subject to these rules.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ib.fullname" . }}-frontend
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $inst }}
+      app.kubernetes.io/component: frontend
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - ports: [{ port: 8080, protocol: TCP }] # public load balancer
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $inst }}
+              app.kubernetes.io/component: backend
+      ports: [{ port: 8000, protocol: TCP }]
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }] # DNS
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ib.fullname" . }}-backend
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $inst }}
+      app.kubernetes.io/component: backend
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $inst }}
+              app.kubernetes.io/component: frontend
+      ports: [{ port: 8000, protocol: TCP }]
+  egress:
+    - ports: [{ port: 5432, protocol: TCP }] # PostgreSQL (managed endpoint IP is not known in advance)
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+---
+# Hook jobs (provision / migrate) only talk to the database.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ib.fullname" . }}-db-jobs
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - { key: app.kubernetes.io/instance, operator: In, values: [{{ $inst | quote }}] }
+      - { key: app.kubernetes.io/component, operator: In, values: [db-provision, migrate] }
+  policyTypes: [Ingress, Egress]
+  egress:
+    - ports: [{ port: 5432, protocol: TCP }]
+    - ports: [{ port: 53, protocol: UDP }, { port: 53, protocol: TCP }]
+{{- if eq .Values.database.mode "embedded" }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "ib.fullname" . }}-embedded-db
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $inst }}
+      app.kubernetes.io/component: embedded-db
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $inst }}
+              app.kubernetes.io/component: backend
+      ports: [{ port: 5432, protocol: TCP }]
+  egress: [] # the database never initiates connections
+{{- end }}
+{{- end }}

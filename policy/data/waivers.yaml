@@ -7,8 +7,22 @@
 # waivers:
 #   - id: AWS-RDS-004                       # policy id from catalog.yaml
 #     resource: "module.database.*"         # glob on the Terraform resource address ("*" = any)
-#     environments: [production]            # optional; omit = all environments
+#     stacks: [production]                  # optional; omit = all stacks
 #     owner: "@platform-team"
 #     reason: "Migration window; re-enabled in ticket OPS-123"
 #     expires: "2027-01-31"                 # quoted YYYY-MM-DD
-waivers: []
+waivers:
+  # GitHub-hosted runners have no fixed egress IPs, so restricting the Kubernetes API to an allow-list
+  # would cut off every deploy. The API still requires IAM/OIDC auth and RBAC; nodes are private.
+  # Remediation: run deploy jobs on self-hosted runners inside the VPC (or GitHub larger runners with
+  # static egress IPs), then set api_allowed_cidrs and delete these two entries.
+  - id: AWS-EKS-003
+    resource: "*"
+    owner: "@amansingh14"
+    reason: "CI runners lack static egress IPs; tracked as platform backlog item 'private CI runners'"
+    expires: "2027-06-30"
+  - id: GKE-007
+    resource: "*"
+    owner: "@amansingh14"
+    reason: "CI runners lack static egress IPs; tracked as platform backlog item 'private CI runners'"
+    expires: "2027-06-30"

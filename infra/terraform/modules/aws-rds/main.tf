@@ -36,11 +36,6 @@ variable "tags" {
   default = {}
 }
 
-resource "random_password" "db" {
-  length  = 32
-  special = false # keeps the password URL-safe inside DATABASE_URL
-}
-
 resource "aws_security_group" "db" {
   name_prefix = "${var.name}-db-"
   description = "PostgreSQL access from the Kubernetes workloads only"
@@ -76,7 +71,9 @@ resource "aws_db_instance" "this" {
 
   db_name  = var.db_name
   username = var.username
-  password = random_password.db.result
+  # RDS generates and rotates the master password in Secrets Manager, so it never enters
+  # Terraform state (policy AWS-RDS-008). The pipeline reads it via clouds/aws/db-admin-url.sh.
+  manage_master_user_password = true
 
   db_subnet_group_name   = var.subnet_group_name
   vpc_security_group_ids = [aws_security_group.db.id]
@@ -101,7 +98,7 @@ output "host" { value = aws_db_instance.this.address }
 output "port" { value = aws_db_instance.this.port }
 output "db_name" { value = var.db_name }
 output "username" { value = var.username }
-output "password" {
-  value     = random_password.db.result
-  sensitive = true
+output "admin_secret" {
+  description = "ARN of the RDS-managed Secrets Manager secret with the master credentials."
+  value       = aws_db_instance.this.master_user_secret[0].secret_arn
 }

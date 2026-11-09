@@ -57,6 +57,12 @@ def test_deploy_matrix_follows_cloud_placement(d):
     assert all(m["namespace"] == "idea-board" and m["database"] == "ideas" for m in prod)
 
 
+def test_compliance_matrix_covers_only_deployed_pairs(d):
+    pairs = {(m["cloud"], m["stack"]) for m in d.compliance_matrix()["include"]}
+    assert pairs == {("aws", "nonprod"), ("aws", "preprod"), ("gcp", "preprod"),
+                     ("aws", "production"), ("gcp", "production")}
+
+
 def test_stacks(d):
     assert d.stack_for_branch("development") == "nonprod"
     assert d.stack_for_branch("staging") is None  # staging rides on the nonprod stack
@@ -69,8 +75,7 @@ def test_stacks(d):
 def test_env_values(d):
     dev = d.env_values("development", REPO)
     assert dev["backend"]["replicas"] == 1 and dev["backend"]["logLevel"] == "DEBUG"
-    assert dev["database"] == {"mode": "external", "existingSecret": "idea-board-db",
-                               "createDatabase": True, "name": "ideas_development"}
+    assert dev["database"] == {"mode": "external", "name": "ideas_development", "createDatabase": True}
     assert dev["backend"]["autoscaling"]["enabled"] is False
     prod = d.env_values("production", REPO)
     assert prod["database"]["createDatabase"] is False
@@ -89,7 +94,7 @@ def _broken(mutate):
     (lambda r: r["environments"]["staging"].update(namespace="development"), "share ns"),
     (lambda r: r["environments"]["qa"].update(database="ideas_staging"), "share db"),
     (lambda r: r["environments"]["qa"].update(create_database=False), "create_database must be true"),
-    (lambda r: r["environments"]["qa"].update(clouds=["azure"]), "clouds must be"),
+    (lambda r: r["environments"]["qa"].update(clouds=["azure"]), "clouds must be"),  # no clouds/azure plugin
     (lambda r: r["environments"]["production"].update(promote_to="development"), "promotion cycle"),
     (lambda r: r["environments"]["qa"].update(database="drop table;"), "invalid database name"),
 ])

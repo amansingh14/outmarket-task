@@ -1,0 +1,38 @@
+# Quality bar for the AI features: run the evaluation set (ai/evals/cases.yaml) against the live
+# model weekly and on demand. Prompt or model changes should move this scorecard, not just "look ok".
+# Without ANTHROPIC_API_KEY it runs the offline subset (the fallbacks), like CI does on every PR.
+name: "AI: evals"
+
+on:
+  workflow_dispatch:
+    inputs:
+      min_pass:
+        description: Minimum pass rate (0-1) for the live model
+        type: string
+        default: "0.85"
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+      - name: Run evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          MIN_PASS: ${{ inputs.min_pass || '0.85' }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            devops-ai eval --min-pass "$MIN_PASS"
+          else
+            echo "::notice::ANTHROPIC_API_KEY not set; running the offline subset only"
+            devops-ai eval --offline
+          fi

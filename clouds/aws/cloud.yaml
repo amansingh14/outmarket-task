@@ -1,0 +1,24 @@
+# Cloud plugin: everything the pipeline needs to know about AWS, outside Terraform itself.
+# Adding a cloud = adding a folder like this one (see README "Adding a third cloud").
+name: aws
+display: Amazon Web Services
+kubernetes: Amazon EKS
+database: Amazon RDS for PostgreSQL
+terraform_root: infra/terraform/envs/aws
+
+# GitHub repository variables each pipeline needs for this cloud.
+github_vars:
+  deploy: [AWS_DEPLOY_ROLE_ARN, TF_STATE_BUCKET_AWS]
+  plan: [AWS_PLAN_ROLE_ARN]
+
+# Rough on-demand list prices, USD per month (730 h). Used by the deterministic cost estimate
+# shown next to AI-proposed stack profiles. The AI never guesses prices.
+pricing:
+  node: { small: 30.4, medium: 60.7, large: 140.2 } # t3.medium / t3.large / m6i.xlarge
+  database: { small: 11.7, medium: 47.5, large: 113.2 } # db.t4g.micro / db.t4g.medium / db.m6g.large
+  database_storage_per_gb: 0.115
+  spot_discount: 0.65
+  control_plane: { zonal: 73.0, regional: 73.0 }
+  nat_gateway: 32.9
+  nat_gateways_when_ha: 3 # one per AZ
+  load_balancer: 18.0

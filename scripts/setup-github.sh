@@ -44,31 +44,38 @@ gh api -X PUT "repos/$REPO/actions/permissions/workflow" \
   -f default_workflow_permissions=read -F can_approve_pull_request_reviews=true >/dev/null \
   && ok "workflows may create pull requests" || warn "could not change Actions workflow permissions"
 
-echo "4. GitHub Environments"
-# Deploys come from workflow_run, whose ref is the default branch, so per-branch environment
-# rules would block them. "protected branches only" still prevents deploying from a feature branch.
-for env in development staging qa preprod production infra-nonprod infra-preprod infra-production; do
-  case "$env" in
-    preprod|production|infra-preprod|infra-production)
-      body=$(jq -n --argjson id "$APPROVER_ID" \
-        '{wait_timer: 0, prevent_self_review: false, reviewers: [{type: "User", id: $id}],
-          deployment_branch_policy: {protected_branches: true, custom_branch_policies: false}}')
-      label="requires approval by $APPROVER" ;;
-    *)
-      body='{"deployment_branch_policy": {"protected_branches": true, "custom_branch_policies": false}}'
-      label="auto-deploy" ;;
-  esac
-  if echo "$body" | gh api -X PUT "repos/$REPO/environments/$env" --input - >/dev/null 2>/tmp/env.err; then
-    ok "$env ($label)"
+echo "4. GitHub Environments (each deployable only from its own branch)"
+# Deploys run from CI on the environment's own branch, so each environment is locked to it:
+# nobody can deploy production from a feature branch, even with a manual run.
+declare_env() {  # name branch needs_approval
+  local name=$1 branch=$2 approval=$3 body label
+  if [ "$approval" = yes ]; then
+    body=$(jq -n --argjson id "$APPROVER_ID" '{wait_timer: 0, prevent_self_review: false,
+      reviewers: [{type: "User", id: $id}],
+      deployment_branch_policy: {protected_branches: false, custom_branch_policies: true}}')
+    label="approval by $APPROVER, branch $branch only"
   else
-    # Retry without reviewers / branch policy (free private repos reject them).
-    if gh api -X PUT "repos/$REPO/environments/$env" >/dev/null 2>&1; then
-      warn "$env created WITHOUT protection rules ($(head -c 120 /tmp/env.err)); needs a public repo or paid plan"
-    else
-      warn "could not create environment $env"
-    fi
+    body='{"deployment_branch_policy": {"protected_branches": false, "custom_branch_policies": true}}'
+    label="auto-deploy, branch $branch only"
   fi
-done
+  if echo "$body" | gh api -X PUT "repos/$REPO/environments/$name" --input - >/dev/null 2>/tmp/env.err; then
+    gh api -X POST "repos/$REPO/environments/$name/deployment-branch-policies" -f name="$branch" -f type=branch \
+      >/dev/null 2>&1 || true   # already present
+    ok "$name ($label)"
+  elif gh api -X PUT "repos/$REPO/environments/$name" >/dev/null 2>&1; then
+    warn "$name created WITHOUT protection rules ($(head -c 120 /tmp/env.err)); needs a public repo or paid plan"
+  else
+    warn "could not create environment $name"
+  fi
+}
+declare_env development development no
+declare_env staging staging no
+declare_env qa qa no
+declare_env preprod preprod yes
+declare_env production production yes
+declare_env infra-nonprod development no
+declare_env infra-preprod preprod yes
+declare_env infra-production production yes
 
 echo "5. Branch protection (PR required, CI gate + compliance report must pass, no force-push)"
 for b in "${BRANCHES[@]}"; do

@@ -1,0 +1,76 @@
+# Remove a PR's preview environment when the PR is closed or merged (deterministic, no AI).
+name: Preview cleanup
+
+on:
+  pull_request:
+    types: [closed]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  clouds:
+    runs-on: ubuntu-latest
+    outputs:
+      clouds: ${{ steps.c.outputs.clouds }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+      - id: c
+        run: devops-ai delivery clouds
+
+  teardown:
+    needs: clouds
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(needs.clouds.outputs.clouds) }}
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+      GCP_REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_PROJECT_NUMBER: ${{ vars.GCP_PROJECT_NUMBER }}
+      TF_STATE_BUCKET_AWS: ${{ vars.TF_STATE_BUCKET_AWS }}
+      TF_STATE_BUCKET_GCP: ${{ vars.TF_STATE_BUCKET_GCP }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+      - id: auth
+        uses: ./.github/actions/cloud-auth
+        with:
+          cloud: ${{ matrix.cloud }}
+          kube-tools: "true"
+          aws-deploy-role: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          gcp-workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp-deploy-service-account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        if: steps.auth.outputs.configured == 'true'
+        with:
+          terraform_version: 1.12.2
+          terraform_wrapper: false
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        if: steps.auth.outputs.configured == 'true'
+        with:
+          version: v3.16.3
+      - name: Tear down preview-pr-${{ github.event.pull_request.number }}
+        if: steps.auth.outputs.configured == 'true'
+        env:
+          DEVOPS_AI_OFFLINE: "1" # deterministic plan, still validated by the command policy
+        run: |
+          scripts/tf.sh "${{ matrix.cloud }}" nonprod output -json > /tmp/tf.json 2>/dev/null || { echo "no nonprod cluster on ${{ matrix.cloud }}"; exit 0; }
+          [ -n "$(jq -r '.cluster_name.value // empty' /tmp/tf.json)" ] || { echo "no nonprod cluster on ${{ matrix.cloud }}"; exit 0; }
+          eval "$(jq -r .kubeconfig_command.value /tmp/tf.json)"
+          if ! kubectl get namespace "preview-pr-${{ github.event.pull_request.number }}" >/dev/null 2>&1; then
+            echo "no preview on ${{ matrix.cloud }}"; exit 0
+          fi
+          devops-ai chatops --comment "/teardown-preview ${{ matrix.cloud }}" --pr "${{ github.event.pull_request.number }}" \
+            --image-owner unused --image-tag unused --default-cloud "${{ matrix.cloud }}" --execute

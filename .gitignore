@@ -28,3 +28,6 @@ build/
 results/
 report.md
 .env
+
+# Local tool settings
+.claude/settings.local.json

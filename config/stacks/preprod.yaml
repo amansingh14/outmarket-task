@@ -1,5 +1,5 @@
 # Sizing for the preprod stack: production's shape at lower scale, used for release sign-off.
-environment: preprod
+stack: preprod
 tier: preprod
 node_size: medium
 node_min: 2

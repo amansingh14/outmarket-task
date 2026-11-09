@@ -20,7 +20,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from . import llm
+from . import clouds, llm
 from .command_policy import CHART_PATH, Verdict, check_plan
 from .redact import redact
 
@@ -37,7 +37,7 @@ class Step(BaseModel):
 
 class DeployPlan(BaseModel):
     intent: Intent
-    cloud: Literal["aws", "gcp"]
+    cloud: str = Field(description="One of the available clouds listed in the request")
     namespace: str
     summary: str = Field(description="One paragraph for the PR comment explaining the plan")
     risk: Literal["low", "medium", "high"]
@@ -49,8 +49,14 @@ class Context:
     pr_number: int
     image_owner: str
     image_tag: str
-    default_cloud: str = "aws"
-    available_clouds: tuple[str, ...] = ("aws", "gcp")
+    default_cloud: str = ""
+    available_clouds: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.available_clouds:
+            self.available_clouds = tuple(clouds.names())
+        if not self.default_cloud:
+            self.default_cloud = self.available_clouds[0]
 
     @property
     def preview_namespace(self) -> str:
@@ -146,8 +152,13 @@ def plan(comment: str, ctx: Context) -> tuple[DeployPlan, str]:
         return _offline_plan(comment, ctx), f"offline-parser ({exc})"
 
 
-def validate(p: DeployPlan) -> Verdict:
-    return check_plan([(s.tool, s.args) for s in p.steps], p.namespace)
+def validate(p: DeployPlan, available_clouds: tuple[str, ...] | None = None) -> Verdict:
+    verdict = check_plan([(s.tool, s.args) for s in p.steps], p.namespace)
+    allowed = available_clouds or tuple(clouds.names())
+    if p.cloud not in allowed:
+        verdict.allowed = False
+        verdict.violations.append(f"cloud `{p.cloud}` is not available here ({', '.join(allowed)})")
+    return verdict
 
 
 def execute(p: DeployPlan, timeout: int = 900) -> list[dict]:

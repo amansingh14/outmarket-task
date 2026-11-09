@@ -147,3 +147,17 @@ findings contains {"id": "AWS-NET-002", "resource": r.address, "msg": msg} if {
 	lib.port_open(rule.from_port, rule.to_port, p)
 	msg := sprintf("inline ingress from %s to port %d", [cidr, p])
 }
+
+# ------------------------------------------------------------- NetworkPolicy
+findings contains {"id": "AWS-EKS-006", "resource": r.address, "msg": msg} if {
+	some r in lib.resources("aws_eks_cluster")
+	not vpc_cni_network_policy
+	msg := "vpc-cni addon must set enableNetworkPolicy=\"true\" so NetworkPolicies are enforced"
+}
+
+vpc_cni_network_policy if {
+	some a in lib.resources("aws_eks_addon")
+	lib.after(a).addon_name == "vpc-cni"
+	cfg := json.unmarshal(lib.after(a).configuration_values)
+	object.get(cfg, "enableNetworkPolicy", "false") in {"true", true}
+}

@@ -1,152 +1,109 @@
-# Branching, build and deployment
+# Branching, build and deployment in depth
 
-All of this is driven by [`config/deployments.yaml`](../config/deployments.yaml). Pipelines read it
-through `devops-ai delivery …`, so changing where an environment runs (for example adding GCP to QA)
-is a one-line PR.
+The README covers setup. This page explains how the delivery model works and why it's built this way.
 
-## Branches and environments
+Everything here is driven by [`config/deployments.yaml`](../config/deployments.yaml), read through
+`devops-ai delivery …`. Run `devops-ai delivery validate` to print the current model.
 
-```mermaid
-flowchart LR
-  F[feature/*] -->|PR| D[development]
-  D -->|promotion PR| S[staging]
-  S -->|promotion PR| Q[qa]
-  Q -->|promotion PR| P[preprod]
-  P -->|promotion PR + approval| PR[production]
-  H[hotfix/*] -->|PR + approval| PR
-  PR -.->|back-merge PR| D
-```
+## Branches, environments, stacks
 
-| Branch | Environment | Infra stack | Clouds | Namespace | Database | Deploy gate |
-|---|---|---|---|---|---|---|
-| `development` | development | nonprod | AWS | `development` | `ideas_development` (shared instance) | automatic |
-| `staging` | staging | nonprod | AWS | `staging` | `ideas_staging` (shared instance) | automatic |
-| `qa` | qa | nonprod | AWS | `qa` | `ideas_qa` (shared instance) | automatic |
-| `preprod` | preprod | preprod | AWS + GCP | `idea-board` | dedicated | approval |
-| `production` | production | production | AWS + GCP | `idea-board` | dedicated, HA | approval |
+| Branch | Environment | Stack | Clouds | Deploy gate | Infra applied from here |
+|---|---|---|---|---|---|
+| `development` | development | nonprod | AWS | automatic | nonprod |
+| `staging` | staging | nonprod | AWS | automatic | – |
+| `qa` | qa | nonprod | AWS | automatic | – |
+| `preprod` | preprod | preprod | AWS + GCP | approval | preprod |
+| `production` | production | production | AWS + GCP | approval | production |
 
-- **nonprod** is one cluster and one database instance (per cloud) shared by development, staging and
-  qa. Each environment gets its own namespace and its own database. A Helm hook creates the
-  database on first deploy.
-- **preprod** has production's shape at lower scale. **production** is HA (Multi-AZ / regional DB,
-  regional control plane, deletion protection).
-- Branch rules are enforced by the `branch-policy` CI job. A `feature/*` PR into `staging` fails,
-  and so does `development` → `production` (no skipping environments).
+- A **stack** is one cluster plus one managed PostgreSQL instance per cloud. Its sizing is in
+  `config/stacks/<stack>.yaml`.
+- **nonprod** is shared by development, staging and qa: one namespace and one database each, plus
+  a separate database login per environment. About 40% of the cost of dedicated stacks.
+- Lower environments run on one cloud and preprod/production on both, so production's multi-cloud
+  setup is always rehearsed in preprod first. Add a cloud to an environment by editing its `clouds:` list.
 
-Short-lived branch prefixes: `feature/`, `fix/`, `chore/`, `docs/`, `refactor/`, `test/` (into
-`development`), `hotfix/` (into `production`).
+**Branch rules** (`branch-policy` job, `devops-ai delivery check-promotion`):
 
-## Pipelines
-
-| Workflow | Trigger | What it does |
-|---|---|---|
-| [`ci.yml`](../.github/workflows/ci.yml) | every PR, every push to an env branch | branch policy · backend lint+tests · frontend build · AI tests · Helm lint/render for all 5 envs · image build + Trivy scan · single `gate` check |
-| [`build-images.yml`](../.github/workflows/build-images.yml) | called by CI and Deploy | builds each image **once**, tagged `src-<tree hash of its source dir>`; existing tags are reused, never rebuilt |
-| [`deploy.yml`](../.github/workflows/deploy.yml) | CI succeeded on a push to an env branch; or manual | resolve env → deploy to each of its clouds (in the GitHub Environment) → AI health check with auto-rollback → open/update the promotion PR |
-| [`infra.yml`](../.github/workflows/infra.yml) | push to `development` / `preprod` / `production` touching infra; or manual | `terraform plan` → AI plan review + destructive-change gate → apply in `infra-<stack>` environment |
-| [`terraform-compliance.yml`](../.github/workflows/terraform-compliance.yml) | every PR (heavy jobs only if infra changed) | fmt/validate · OPA policies on the full plan of each stack · PR report |
-
-### Build once, promote the same artifact
-
-Images are tagged with `git rev-parse HEAD:app/backend` (and `app/frontend`), the tree hash of the
-image's own source directory. A promotion merge doesn't change that directory's contents, so
-staging, qa, preprod and production resolve to the **same tag** that development built and tested.
-The deploy job reuses it and never rebuilds per environment. A `sha-<commit>` alias is added for
-traceability.
-
-### Promotion
-
-After an environment deploys and passes its health check on every cloud, the pipeline opens (or
-updates) a PR to the next branch. The PR lists the deployment results per cloud, the image tags and
-the commit changelog. A person reviews and merges it, and that merge deploys the next environment.
-preprod and production also wait for an approval in their GitHub Environment.
-
-If production gains changes development lacks (a hotfix), the pipeline opens a **back-merge** PR
-`production → development`.
-
-## Day-to-day
-
-**Ship a feature**
-1. `git switch -c feature/my-change development`, push, open a PR into `development`.
-2. CI (plus the compliance report if you touched Terraform) must be green. Merge.
-3. development deploys automatically, then a `Promote development → staging` PR appears.
-4. Merge promotion PRs as each environment is signed off. preprod and production ask for approval.
-
-**Hotfix**
-1. `git switch -c hotfix/fix-timeout production`, PR into `production`, approve, merge.
-2. After production deploys, the back-merge PR into `development` appears. Merge it so the fix
-   ships with the next release.
-
-**Roll back**
-- Automatic: a deploy that fails the health check is rolled back to the previous Helm revision, and
-  promotion stops.
-- Manual: run **Deploy** (Actions → Deploy → Run workflow) with the environment and an older commit
-  SHA, or `helm rollback idea-board -n <namespace>`.
-
-**Change infrastructure**: edit `infra/terraform/**` or a sizing profile in
-`config/environments/`. The PR shows the compliance report. Merging into `development` applies
-nonprod; the change reaches preprod/production when promoted there, after approval in
-`infra-preprod` / `infra-production`.
-
-## Setup
-
-### 1. Repository (once)
-
-```bash
-scripts/setup-github.sh <approver-github-login>
-```
-
-This creates the five branches, sets `development` as the default branch, creates the GitHub
-Environments (approvals on preprod, production, infra-preprod, infra-production), protects every
-environment branch (PR required, `gate` and `report` checks must pass, no force-push) and allows
-Actions to open PRs.
-
-> Environment approvals and branch protection on **private** repos need a paid GitHub plan; on a
-> free private repo the script creates everything and reports what it could not protect. Public
-> repos get them for free.
-
-### 2. Cloud setup
-
-State buckets (once, admin credentials):
-
-```bash
-scripts/bootstrap-state.sh aws <tf-state-bucket> us-east-1
-scripts/bootstrap-state.sh gcp <tf-state-bucket> us-central1 <gcp-project>
-```
-
-Repository **variables** (Settings → Secrets and variables → Actions → Variables):
-
-| Variable | Used by | Example |
-|---|---|---|
-| `AWS_DEPLOY_ROLE_ARN` | infra + deploy (OIDC role; creates EKS so it is cluster admin) | `arn:aws:iam::123456789012:role/idea-board-deploy` |
-| `AWS_PLAN_ROLE_ARN` | PR compliance (read-only) | `arn:aws:iam::123456789012:role/idea-board-plan` |
-| `AWS_REGION` | all | `us-east-1` |
-| `TF_STATE_BUCKET_AWS` | infra + deploy | `acme-idea-board-tfstate` |
-| `GCP_WIF_PROVIDER` | all GCP jobs | `projects/123/locations/global/workloadIdentityPools/github/providers/github` |
-| `GCP_DEPLOY_SERVICE_ACCOUNT` | infra + deploy | `idea-board-deploy@acme.iam.gserviceaccount.com` |
-| `GCP_PLAN_SERVICE_ACCOUNT` | PR compliance (optional; GCP plans work without it) | `idea-board-plan@acme.iam.gserviceaccount.com` |
-| `GCP_PROJECT_ID` / `GCP_REGION` | all GCP jobs | `acme-idea-board` / `us-central1` |
-| `TF_STATE_BUCKET_GCP` | infra + deploy | `acme-idea-board-tfstate` |
-| `EKS_ADMIN_PRINCIPAL_ARNS` | infra (optional) | `["arn:aws:iam::123456789012:role/platform-admins"]` |
-
-Repository **secrets**:
-
-| Secret | Why |
+| From | May merge into |
 |---|---|
-| `ANTHROPIC_API_KEY` | AI health checks and plan reviews. Optional: without it they fall back to deterministic checks. |
-| `PROMOTION_TOKEN` | Fine-grained PAT or GitHub App token (contents + pull requests: write). PRs opened with the default `GITHUB_TOKEN` **do not trigger CI**, so their required checks never report. Without this token, re-run CI on promotion PRs by hand. |
-| `GHCR_PULL_TOKEN` | PAT with `read:packages`, so clusters can pull private GHCR images. Not needed if the packages are public. |
+| `feature/`, `fix/`, `chore/`, `docs/`, `refactor/`, `test/`, `dependabot/`, `renovate/` | `development` |
+| `development` → `staging` → `qa` → `preprod` → `production` | the next branch only (no skipping, no going backwards) |
+| `hotfix/*` | `production` |
+| `production` | `development` (back-merge) |
 
-Until a cloud is configured, its deploy and infra jobs **skip with a notice** instead of failing.
-The flow (CI → build → promotion PRs) still works end to end, which is how you test the branching
-model before spending money on clusters.
+> Open only **one** PR per branch at a time. GitHub attaches check results to commits, not PRs, so
+> two PRs from the same branch show each other's results.
 
-### 3. First deploy order
+## What happens on a push to an environment branch
 
-1. Merge to `development` → `infra.yml` applies the **nonprod** stack (AWS).
-2. `deploy.yml` deploys development; promote through staging and qa (same stack, nothing to apply).
-3. Promoting to `preprod` applies the **preprod** stack (AWS + GCP) after `infra-preprod` approval,
-   then deploys. Same for `production`.
+```
+ci.yml
+├─ changes, branch-policy, backend, frontend, ai (+ offline evals), charts, workflows
+├─ images ─ build-images.yml: build once · smoke test · Trivy · push + SBOM + provenance + cosign
+├─ gate
+├─ resolve ─ devops-ai delivery resolve --branch <branch>
+├─ infra ─ infra.yml (only if this branch owns a stack AND infra files changed)
+│          plan → AI plan review + destructive gate → apply in environment infra-<stack>
+└─ deploy ─ deploy.yml (after infra succeeded or was skipped)
+           per cloud, in environment <env>: scripts/deploy.sh
+           then: promotion PR to the next branch (or back-merge PR from production)
+```
 
-On the very first push to an environment, infra and deploy run in parallel and the deploy may find
-no cluster yet. Re-run **Deploy** for that environment once the infra apply finishes.
+**Why deploys run inside CI (`workflow_call`) instead of a `workflow_run` trigger**
+- **Versioned with the code.** The deploy uses the workflow and script from the commit being
+  deployed. `workflow_run` always uses the default branch's copy.
+- **No race with infra.** The deploy waits for infra in the same run, so the first rollout of a
+  stack can't start before its cluster exists.
+- **No silent drops.** `workflow_run` events are delivered asynchronously. One was never delivered
+  during testing, so a merge produced no deploy at all.
+- **Real branch locks.** Each GitHub Environment can be locked to its own branch, because the
+  deploy job's ref *is* that branch. With `workflow_run` it's always the default branch.
+
+## `scripts/deploy.sh <environment> <cloud>`
+
+1. Read the stack's Terraform outputs (`scripts/tf.sh <cloud> <stack> output`). If the stack isn't
+   provisioned, fail with a clear message.
+2. Run the `kubeconfig_command` output, and fetch the DB admin password through
+   `clouds/<cloud>/db-admin-url.sh`. The password is masked in logs and never stored in Terraform state.
+3. Create the namespace and the admin Secret, which only the provisioning hook reads. Add the GHCR
+   pull secret if configured.
+4. Take a **baseline** of the running release (probes, error counts, restarts).
+5. Run `helm upgrade --install` with the environment's values (`devops-ai delivery env-values`)
+   and the content-addressed image tags. Hooks: create the environment's own login and database,
+   then `alembic upgrade head`.
+6. Wait for the load balancer address, then run `devops-ai health-check` with `--baseline`,
+   `--rollback` and, if Helm failed, `--helm-failed`. Exit code 1 rolls back and stops the promotion.
+
+`DEPLOY_TARGET=env` points the same script at any cluster: the current kube context plus
+`DB_HOST` and `ADMIN_DATABASE_URL`. That's how it was tested end to end on kind.
+
+## Promotion
+
+When every cloud of an environment is deployed and healthy, the pipeline opens or updates the PR
+to the next branch. The PR body lists each cloud's status, health verdict, URL and the image tags,
+plus the commit changelog. If any cloud was **skipped** (not configured), the PR says so in a
+warning: CI passed, but the change wasn't verified in a running environment.
+
+PRs opened with the default `GITHUB_TOKEN` don't trigger CI. Set `PROMOTION_TOKEN` (fine-grained
+PAT or GitHub App token) so promotion PRs get their required checks automatically.
+
+## Rollback
+
+- **Automatic.** Any hard gate, or a confident AI "unhealthy" verdict, rolls back to the newest
+  revision that actually ran (`deployed`/`superseded`), skipping failed ones. Plain
+  `helm rollback 0` would choose a failed revision. A first install has nothing to roll back to,
+  so it's left in place for inspection and the pipeline fails.
+- **Manual.** Run **Deploy** from the environment's branch with an older commit SHA (images are
+  immutable and content-addressed), or `helm rollback idea-board <revision> -n <namespace>`.
+
+## Preview environments (ChatOps)
+
+On a PR, comment `/deploy-preview [aws|gcp] [N replicas]`:
+1. The PR head's images are built.
+2. Claude plans the kubectl/helm steps, and the command policy checks every step.
+3. The release `pr-<N>` is deployed into `preview-pr-<N>` on that cloud's **nonprod** cluster, with
+   an embedded throwaway Postgres.
+
+`/teardown-preview` removes it, and closing the PR does the same automatically
+(`preview-cleanup.yml`). `/ai <question>` produces read-only diagnosis commands. Without a cluster,
+ChatOps does a validated dry run and posts the plan.

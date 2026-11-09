@@ -1,5 +1,5 @@
 # Cloud-neutral defaults. Per-environment overrides are rendered by
-# `devops-ai env-profile` into deploy/helm/values/<env>.yaml.
+# `devops-ai delivery env-values --env <env>` (stack sizing + config/deployments.yaml).
 environment: ""                 # logical environment (development, staging, ...); set by the pipeline
 
 image:
@@ -47,18 +47,30 @@ podDisruptionBudget:
   minAvailable: 1
 
 database:
-  # external: use the managed DB (RDS / Cloud SQL); URL comes from a Secret
-  #           that the pipeline creates from Terraform outputs.
-  # embedded: run a throwaway Postgres in-cluster (used by PR preview envs).
+  # external: managed DB (RDS / Cloud SQL). The pipeline puts the *admin* URL in `adminSecret`;
+  #           a provisioning hook creates this environment's own login + database, and the app
+  #           only ever receives that least-privilege login (chart-managed Secret <release>-db).
+  # embedded: throwaway Postgres in-cluster (PR preview environments).
   mode: external
-  existingSecret: idea-board-db
-  secretKey: DATABASE_URL
-  # Shared non-prod instance: a pre-install/pre-upgrade hook creates `name` if it is missing,
-  # using ADMIN_DATABASE_URL (libpq format) from the same Secret.
-  createDatabase: false
-  name: ideas
+  name: ideas                    # this environment's database
+  createDatabase: false          # true on the shared non-prod instance
+  appUser: ""                    # default: <name>_app
+  host: ""                       # from Terraform outputs (scripts/deploy.sh)
+  port: 5432
+  sslmode: require
+  adminSecret: idea-board-db-admin
   adminSecretKey: ADMIN_DATABASE_URL
-  initImage: postgres:16-alpine
   embedded:
     image: postgres:16-alpine
     storage: 1Gi
+
+# Alembic migrations: a pre-install/pre-upgrade hook Job (external DB); embedded previews migrate
+# at backend startup instead, because their database is created by this same release.
+migrations:
+  enabled: true
+
+# Ingress/egress NetworkPolicies (enforced by EKS VPC CNI / GKE Dataplane V2):
+#   frontend <- anyone on 8080; frontend -> backend only
+#   backend  <- frontend only;  backend  -> PostgreSQL (5432) only
+networkPolicy:
+  enabled: true
