@@ -56,6 +56,8 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
+      # Amazon Linux 2 node images stop at Kubernetes 1.32; AL2023 is required from 1.33.
+      ami_type       = "AL2023_x86_64_STANDARD"
       instance_types = [var.instance_type]
       capacity_type  = var.spot ? "SPOT" : "ON_DEMAND"
       min_size       = var.node_min
