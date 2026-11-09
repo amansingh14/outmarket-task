@@ -52,6 +52,10 @@ runs:
       with:
         role-to-assume: ${{ inputs.purpose == 'plan' && inputs.aws-plan-role || inputs.aws-deploy-role }}
         aws-region: ${{ inputs.aws-region }}
+        # The default 1 h session expired mid-apply while Terraform waited on an EKS node-group
+        # update (~55 min), leaving state unsaved and the lock held. The deploy role allows 2 h
+        # (max-session-duration 7200); the read-only plan role keeps the 1 h default.
+        role-duration-seconds: ${{ inputs.purpose == 'plan' && 3600 || 7200 }}
 
     # ---------------------------------------------------------------- GCP
     - if: inputs.cloud == 'gcp' && steps.check.outputs.configured == 'true'
