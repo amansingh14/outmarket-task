@@ -22,7 +22,7 @@ on:
         options: [nonprod, preprod, production]
       action:
         type: choice
-        options: [plan, apply]
+        options: [plan, apply, unlock]
         default: plan
       allow_destructive:
         description: Allow plans that delete/replace databases, clusters or networks
@@ -66,6 +66,7 @@ jobs:
   plan:
     name: plan (${{ matrix.stack }} / ${{ matrix.cloud }})
     needs: resolve
+    if: inputs.action != 'unlock'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -154,3 +155,35 @@ jobs:
           gcp-deploy-service-account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
       - name: terraform apply (the reviewed plan, nothing else)
         run: scripts/tf.sh "${{ matrix.cloud }}" "${{ matrix.stack }}" apply
+
+  # Manual recovery: release a state lock left by a run that died mid-apply (expired credentials,
+  # cancelled runner). Same approval gate as apply. The next plan refreshes from the real cloud,
+  # so state catches up with whatever the interrupted apply actually changed.
+  unlock:
+    name: unlock (${{ matrix.stack }} / ${{ matrix.cloud }})
+    needs: resolve
+    if: inputs.action == 'unlock'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve.outputs.matrix) }}
+    environment: infra-${{ matrix.stack }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3.1.2
+        with:
+          terraform_version: 1.12.2
+          terraform_wrapper: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet ./ai
+      - uses: ./.github/actions/cloud-auth
+        with:
+          cloud: ${{ matrix.cloud }}
+          aws-deploy-role: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+          gcp-workload-identity-provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp-deploy-service-account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+      - name: release stale state lock
+        run: scripts/tf.sh "${{ matrix.cloud }}" "${{ matrix.stack }}" unlock
