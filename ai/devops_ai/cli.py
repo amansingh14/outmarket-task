@@ -105,6 +105,10 @@ def cmd_review_plan(a: argparse.Namespace) -> int:
     _emit(plan_review.to_markdown(plan_json, r, source, a.cloud, a.stack), a.summary)
     destroy = plan_review.destructive_stateful(plan_review.parse(plan_json))
     _outputs({"risk": r.risk, "destructive": str(bool(destroy)).lower()})
+    if skips := plan_review.version_skips(plan_json):
+        for s in skips:
+            print(f"::error::{s.replace('`', '')}", file=sys.stderr)
+        return 3
     if destroy and not a.allow_destructive:
         print("::error::plan destroys stateful resources; re-run with allow_destructive", file=sys.stderr)
         return 3
