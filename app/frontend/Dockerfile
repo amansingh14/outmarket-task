@@ -6,8 +6,8 @@ RUN npm ci --no-audit --no-fund
 COPY . .
 RUN npm run build
 
-# Unprivileged nginx (stable line) listens on 8080 and runs as a non-root user.
-FROM nginxinc/nginx-unprivileged:1.28-alpine
+# Unprivileged nginx (current stable line, 1.30) listens on 8080 and runs as a non-root user.
+FROM nginxinc/nginx-unprivileged:1.30-alpine
 # Pick up Alpine security fixes published after the base image was built
 # (Trivy in CI fails the build on fixable CRITICAL CVEs).
 USER root
