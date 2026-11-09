@@ -5,6 +5,10 @@ delivery platform that builds, checks, deploys, verifies and promotes it across 
 **Claude** built into the points where judgement is needed and **deterministic guardrails** around
 every AI decision.
 
+**Live (development environment):**
+- GCP: http://35.192.57.91/
+- AWS: http://ad7379d789b444ee3bef1ad928ce6cf8-998847750.us-east-1.elb.amazonaws.com/
+
 | | |
 |---|---|
 | **App** | React SPA behind nginx · FastAPI REST API · PostgreSQL with Alembic migrations |
