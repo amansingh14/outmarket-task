@@ -105,5 +105,8 @@ output "cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "cluster_ca_certificate" { value = module.eks.cluster_certificate_authority_data }
 output "workload_security_group_ids" {
   description = "Security groups attached to nodes/pods; the database allows ingress from these."
-  value       = [module.eks.node_security_group_id, module.eks.cluster_primary_security_group_id]
+  value = {
+    nodes   = module.eks.node_security_group_id
+    cluster = module.eks.cluster_primary_security_group_id
+  }
 }

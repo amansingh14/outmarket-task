@@ -1,7 +1,10 @@
 variable "name" { type = string }
 variable "vpc_id" { type = string }
 variable "subnet_group_name" { type = string }
-variable "allowed_security_group_ids" { type = list(string) }
+variable "allowed_security_group_ids" {
+  description = "Security groups allowed to reach PostgreSQL, keyed by a static name (keys must be known at plan time)."
+  type        = map(string)
+}
 variable "instance_class" { type = string }
 variable "engine_version" {
   type    = string
@@ -48,14 +51,14 @@ resource "aws_security_group" "db" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "from_workloads" {
-  for_each = toset(var.allowed_security_group_ids)
+  for_each = var.allowed_security_group_ids
 
   security_group_id            = aws_security_group.db.id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
   from_port                    = 5432
   to_port                      = 5432
-  description                  = "PostgreSQL from EKS"
+  description                  = "PostgreSQL from EKS (${each.key})"
 }
 
 resource "aws_db_instance" "this" {

@@ -51,7 +51,7 @@ def test_blocked_prs(d, head, base, needle):
 
 
 def test_deploy_matrix_follows_cloud_placement(d):
-    assert [m["cloud"] for m in d.deploy_matrix("development")["include"]] == ["aws"]
+    assert [m["cloud"] for m in d.deploy_matrix("development")["include"]] == ["aws", "gcp"]
     prod = d.deploy_matrix("production")["include"]
     assert [m["cloud"] for m in prod] == ["aws", "gcp"]
     assert all(m["namespace"] == "idea-board" and m["database"] == "ideas" for m in prod)
@@ -59,7 +59,7 @@ def test_deploy_matrix_follows_cloud_placement(d):
 
 def test_compliance_matrix_covers_only_deployed_pairs(d):
     pairs = {(m["cloud"], m["stack"]) for m in d.compliance_matrix()["include"]}
-    assert pairs == {("aws", "nonprod"), ("aws", "preprod"), ("gcp", "preprod"),
+    assert pairs == {("aws", "nonprod"), ("gcp", "nonprod"), ("aws", "preprod"), ("gcp", "preprod"),
                      ("aws", "production"), ("gcp", "production")}
 
 
@@ -67,7 +67,7 @@ def test_stacks(d):
     assert d.stack_for_branch("development") == "nonprod"
     assert d.stack_for_branch("staging") is None  # staging rides on the nonprod stack
     assert d.stack_for_branch("production") == "production"
-    assert d.stack_clouds("nonprod") == ["aws"]
+    assert d.stack_clouds("nonprod") == ["aws", "gcp"]
     assert d.stack_clouds("preprod") == ["aws", "gcp"]
     assert {e.name for e in d.stack_environments("nonprod")} == {"development", "staging", "qa"}
 
