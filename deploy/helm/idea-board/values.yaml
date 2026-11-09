@@ -1,12 +1,17 @@
 # Cloud-neutral defaults. Per-environment overrides are rendered by
 # `devops-ai env-profile` into deploy/helm/values/<env>.yaml.
+environment: ""                 # logical environment (development, staging, ...); set by the pipeline
+
 image:
   registry: ghcr.io
   owner: CHANGE_ME              # GitHub org/user; set by the pipeline
-  tag: latest
+  tag: latest                   # fallback when a component has no tag of its own
   pullPolicy: IfNotPresent
+  pullSecrets: []               # e.g. [ghcr-pull] when packages are private
 
 backend:
+  image:
+    tag: ""                     # content-addressed tag from CI (src-<tree hash>)
   replicas: 2
   resources:
     requests: { cpu: 100m, memory: 128Mi }
@@ -19,6 +24,8 @@ backend:
   logLevel: INFO
 
 frontend:
+  image:
+    tag: ""
   replicas: 2
   resources:
     requests: { cpu: 50m, memory: 64Mi }
@@ -46,6 +53,12 @@ database:
   mode: external
   existingSecret: idea-board-db
   secretKey: DATABASE_URL
+  # Shared non-prod instance: a pre-install/pre-upgrade hook creates `name` if it is missing,
+  # using ADMIN_DATABASE_URL (libpq format) from the same Secret.
+  createDatabase: false
+  name: ideas
+  adminSecretKey: ADMIN_DATABASE_URL
+  initImage: postgres:16-alpine
   embedded:
     image: postgres:16-alpine
     storage: 1Gi

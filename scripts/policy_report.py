@@ -50,7 +50,7 @@ def main() -> int:
     ap.add_argument("--results", required=True)
     ap.add_argument("--catalog", default="policy/data/catalog.yaml")
     ap.add_argument("--clouds", default="aws,gcp")
-    ap.add_argument("--envs", default="staging,production")
+    ap.add_argument("--envs", default="nonprod,preprod,production")
     ap.add_argument("--out")
     a = ap.parse_args()
 

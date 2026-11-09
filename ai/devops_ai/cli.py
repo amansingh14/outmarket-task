@@ -14,12 +14,13 @@ so results show up on the run page and can be posted to the PR.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 from pathlib import Path
 
-from . import chatops, env_profile, health, plan_review, scaffold
+from . import chatops, delivery, env_profile, health, plan_review, scaffold
 
 REPO = Path(os.getenv("GITHUB_WORKSPACE", Path(__file__).resolve().parents[2]))
 
@@ -126,6 +127,73 @@ def cmd_scaffold(a: argparse.Namespace) -> int:
     return 0
 
 
+def _delivery() -> delivery.Delivery:
+    return delivery.load(REPO / "config" / "deployments.yaml")
+
+
+def cmd_delivery_resolve(a: argparse.Namespace) -> int:
+    """Branch -> environment, deploy matrix and promotion target (for deploy.yml)."""
+    d = _delivery()
+    env = d.environments.get(a.environment) if a.environment else d.by_branch(a.branch)
+    if env is None:
+        _output("environment", "")
+        print(f"branch `{a.branch}` does not deploy anywhere")
+        return 0
+    nxt = d.environments[env.promote_to].branch if env.promote_to else ""
+    outputs = {
+        "environment": env.name, "branch": env.branch, "stack": env.stack, "approval": str(env.approval).lower(),
+        "promote_to": nxt, "matrix": json.dumps(d.deploy_matrix(env.name), separators=(",", ":")),
+        "backmerge_to": d.promotion["backmerge_to"] if env.branch == d.promotion["backmerge_from"] else "",
+    }
+    for k, v in outputs.items():
+        _output(k, v)
+        print(f"{k}={v}")
+    return 0
+
+
+def cmd_delivery_infra(a: argparse.Namespace) -> int:
+    """Branch (or explicit stack) -> stack and per-cloud matrix (for infra.yml)."""
+    d = _delivery()
+    stack = a.stack or d.stack_for_branch(a.branch or "")
+    if not stack:
+        _output("stack", "")
+        print(f"branch `{a.branch}` does not apply any infrastructure stack")
+        return 0
+    if stack not in d.stacks:
+        print(f"unknown stack {stack}", file=sys.stderr)
+        return 2
+    for k, v in {"stack": stack, "profile": d.stacks[stack]["profile"],
+                 "matrix": json.dumps(d.infra_matrix(stack), separators=(",", ":"))}.items():
+        _output(k, v)
+        print(f"{k}={v}")
+    return 0
+
+
+def cmd_delivery_check(a: argparse.Namespace) -> int:
+    ok, reason = _delivery().check_promotion(a.base, a.head)
+    _emit(f"### {'✅' if ok else '❌'} Branch policy\n\n{reason}", a.summary)
+    return 0 if ok else 1
+
+
+def cmd_delivery_values(a: argparse.Namespace) -> int:
+    import yaml
+
+    values = _delivery().env_values(a.env, REPO)
+    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(a.out).write_text(yaml.safe_dump(values, sort_keys=False))
+    print(f"wrote {a.out}")
+    return 0
+
+
+def cmd_delivery_validate(a: argparse.Namespace) -> int:
+    d = _delivery()
+    print("deployments.yaml OK · path: " + " → ".join(d.path()))
+    for e in d.environments.values():
+        print(f"  {e.name:<12} branch={e.branch:<12} stack={e.stack:<10} clouds={','.join(e.clouds):<8} "
+              f"ns={e.namespace:<12} db={e.database}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "WARNING"))
     ap = argparse.ArgumentParser(prog="devops-ai", description=__doc__,
@@ -178,6 +246,27 @@ def main(argv: list[str] | None = None) -> int:
     s.add_argument("--spec", required=True)
     s.add_argument("--out-dir", default=str(REPO / "deploy" / "helm" / "values" / "services"))
     s.set_defaults(fn=cmd_scaffold)
+
+    s = sub.add_parser("delivery", help="branching / environment model (config/deployments.yaml)")
+    dsub = s.add_subparsers(dest="delivery_cmd", required=True)
+    x = dsub.add_parser("resolve", help="branch -> environment + deploy matrix")
+    x.add_argument("--branch", default="")
+    x.add_argument("--environment", default="")
+    x.set_defaults(fn=cmd_delivery_resolve)
+    x = dsub.add_parser("infra", help="branch or stack -> terraform matrix")
+    x.add_argument("--branch", default="")
+    x.add_argument("--stack", default="")
+    x.set_defaults(fn=cmd_delivery_infra)
+    x = dsub.add_parser("check-promotion", help="is a PR head -> base allowed?")
+    x.add_argument("--base", required=True)
+    x.add_argument("--head", required=True)
+    x.set_defaults(fn=cmd_delivery_check)
+    x = dsub.add_parser("env-values", help="helm values for an environment")
+    x.add_argument("--env", required=True)
+    x.add_argument("--out", required=True)
+    x.set_defaults(fn=cmd_delivery_values)
+    x = dsub.add_parser("validate", help="validate deployments.yaml and print the model")
+    x.set_defaults(fn=cmd_delivery_validate)
 
     a = ap.parse_args(argv)
     return a.fn(a)

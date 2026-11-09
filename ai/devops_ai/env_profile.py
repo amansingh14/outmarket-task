@@ -21,7 +21,7 @@ from . import llm
 from .pricing import estimate_monthly_cost
 
 Size = Literal["small", "medium", "large"]
-Tier = Literal["preview", "dev", "staging", "production"]
+Tier = Literal["preview", "dev", "staging", "preprod", "production"]
 
 
 class EnvProfile(BaseModel):
@@ -174,7 +174,16 @@ def render(profile: EnvProfile, cloud: str, out_dir: Path) -> tuple[Path, Path]:
         "deletion_protection": profile.deletion_protection,
         "zonal_control_plane": profile.zonal_control_plane,
     }
-    values = {
+    tf_path = out_dir / f"{profile.environment}.{cloud}.auto.tfvars.json"
+    values_path = out_dir / f"{profile.environment}.values.yaml"
+    tf_path.write_text(json.dumps(tfvars, indent=2) + "\n")
+    values_path.write_text(yaml.safe_dump(helm_values(profile), sort_keys=False))
+    return tf_path, values_path
+
+
+def helm_values(profile: EnvProfile) -> dict:
+    """Helm chart values implied by a sizing profile."""
+    return {
         "backend": {
             "replicas": profile.backend_replicas,
             "logLevel": profile.log_level,
@@ -196,11 +205,6 @@ def render(profile: EnvProfile, cloud: str, out_dir: Path) -> tuple[Path, Path]:
         },
         "podDisruptionBudget": {"enabled": profile.backend_replicas > 1},
     }
-    tf_path = out_dir / f"{profile.environment}.{cloud}.auto.tfvars.json"
-    values_path = out_dir / f"{profile.environment}.values.yaml"
-    tf_path.write_text(json.dumps(tfvars, indent=2) + "\n")
-    values_path.write_text(yaml.safe_dump(values, sort_keys=False))
-    return tf_path, values_path
 
 
 def to_markdown(profile: EnvProfile, source: str, notes: list[str]) -> str:
