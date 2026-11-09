@@ -56,7 +56,7 @@ resource "google_sql_database_instance" "this" {
     user_labels       = var.labels
 
     ip_configuration {
-      ipv4_enabled    = false # private IP only, never on the internet
+      ipv4_enabled    = true # TEST: deliberately non-compliant
       private_network = var.network_id
       ssl_mode        = "ENCRYPTED_ONLY"
     }
