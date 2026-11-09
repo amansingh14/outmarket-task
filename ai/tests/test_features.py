@@ -154,3 +154,13 @@ def test_redact():
     s = redact("conn postgresql+psycopg://ideas:s3cr3t@db:5432/x password=abc Authorization: Bearer xyz.abc")
     assert "s3cr3t" not in s and "abc Auth" not in s and "xyz.abc" not in s
     assert "ideas:***@db" in s
+
+
+def test_offline_verdict_never_healthy_when_a_hard_gate_failed():
+    sig = health.Signals(
+        "ns", "rel", [], ["2026-11-09T16:30:00Z  BackOff  idea-board-db-provision-x  Back-off pulling image"],
+        {}, [], {}, "", ["helm upgrade failed: job idea-board-db-provision failed: DeadlineExceeded"])
+    v = health._offline_verdict(sig)
+    assert v.verdict == "unhealthy" and v.recommended_action == "rollback"
+    assert "image pull" in v.suspected_cause
+    assert any(e.startswith("event:") for e in v.evidence)
