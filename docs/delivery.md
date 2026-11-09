@@ -54,8 +54,9 @@ ci.yml
   deployed. `workflow_run` always uses the default branch's copy.
 - **No race with infra.** The deploy waits for infra in the same run, so the first rollout of a
   stack can't start before its cluster exists.
-- **No silent drops.** `workflow_run` events are delivered asynchronously. One was never delivered
-  during testing, so a merge produced no deploy at all.
+- **No unexplained delays.** `workflow_run` events are delivered asynchronously. During testing one
+  deploy started about six minutes after its CI run finished, long enough to look like it had been
+  dropped. In-run jobs start as soon as their dependencies finish.
 - **Real branch locks.** Each GitHub Environment can be locked to its own branch, because the
   deploy job's ref *is* that branch. With `workflow_run` it's always the default branch.
 

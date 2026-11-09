@@ -175,9 +175,11 @@ jobs:
           fi
 
   # ------------------------------------------------------------------ CD
+  # Explicit always() + result checks: the implicit success() also looks at *transitive* needs, and
+  # branch-policy is legitimately skipped on pushes, which would otherwise skip the whole CD chain.
   resolve:
     needs: gate
-    if: github.event_name == 'push'
+    if: always() && github.event_name == 'push' && needs.gate.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.r.outputs.environment }}
@@ -193,7 +195,9 @@ jobs:
 
   infra:
     needs: [changes, resolve]
-    if: needs.resolve.outputs.apply_stack != '' && needs.changes.outputs.infra == 'true'
+    if: >-
+      always() && needs.resolve.result == 'success' &&
+      needs.resolve.outputs.apply_stack != '' && needs.changes.outputs.infra == 'true'
     uses: ./.github/workflows/infra.yml
     with:
       stack: ${{ needs.resolve.outputs.apply_stack }}
@@ -203,7 +207,8 @@ jobs:
   deploy:
     needs: [resolve, images, infra]
     if: >-
-      always() && needs.resolve.outputs.environment != '' && needs.images.result == 'success' &&
+      always() && needs.resolve.result == 'success' && needs.resolve.outputs.environment != '' &&
+      needs.images.result == 'success' &&
       (needs.infra.result == 'success' || needs.infra.result == 'skipped')
     uses: ./.github/workflows/deploy.yml
     with:
