@@ -52,6 +52,38 @@ def destructive_stateful(changes: list[Change]) -> list[Change]:
     return [c for c in changes if c.type in STATEFUL and c.kind in ("delete", "replace")]
 
 
+# Managed Kubernetes control planes upgrade one minor version at a time and never downgrade.
+# Terraform's plan cannot know this; the apply fails halfway (EKS: "Unsupported Kubernetes minor
+# version update from 1.31 to 1.34"). Catch it at plan time instead.
+K8S_VERSION_ATTR = {"aws_eks_cluster": "version", "google_container_cluster": "min_master_version"}
+
+
+def _minor(v: object) -> tuple[int, int] | None:
+    parts = str(v or "").split(".")
+    try:
+        return int(parts[0]), int(parts[1])
+    except (IndexError, ValueError):
+        return None
+
+
+def version_skips(plan_json: str) -> list[str]:
+    """In-place cluster version changes that skip a minor version or go backwards."""
+    problems = []
+    for rc in json.loads(plan_json).get("resource_changes", []):
+        attr = K8S_VERSION_ATTR.get(rc["type"])
+        ch = rc["change"]
+        if not attr or ch["actions"] != ["update"]:
+            continue
+        old, new = _minor((ch.get("before") or {}).get(attr)), _minor((ch.get("after") or {}).get(attr))
+        if not old or not new or old == new:
+            continue
+        if new[0] != old[0] or new[1] - old[1] != 1:
+            nxt = f"{old[0]}.{old[1] + 1}"
+            problems.append(f"`{rc['address']}`: {old[0]}.{old[1]} → {new[0]}.{new[1]} is not supported; "
+                            f"upgrade one minor version at a time (next: {nxt})")
+    return problems
+
+
 class PlanReview(BaseModel):
     risk: Literal["low", "medium", "high", "critical"]
     summary: str = Field(description="What this plan does, in 2-4 sentences, for a reviewer")
@@ -124,4 +156,7 @@ def to_markdown(plan_json: str, r: PlanReview, source: str, cloud: str, environm
         lines += ["", ":no_entry: **Hard gate:** this plan deletes/replaces stateful resources:",
                   *[f"- `{c.address}` ({c.kind})" for c in destroy],
                   "Apply is blocked unless the workflow is re-run with `allow_destructive: true`."]
+    if skips := version_skips(plan_json):
+        lines += ["", ":no_entry: **Hard gate:** unsupported Kubernetes version change:",
+                  *[f"- {s}" for s in skips], "Apply is blocked; the cloud API would reject it mid-apply."]
     return "\n".join(lines)

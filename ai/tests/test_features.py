@@ -164,3 +164,18 @@ def test_offline_verdict_never_healthy_when_a_hard_gate_failed():
     assert v.verdict == "unhealthy" and v.recommended_action == "rollback"
     assert "image pull" in v.suspected_cause
     assert any(e.startswith("event:") for e in v.evidence)
+
+
+def _cluster_plan(rtype, attr, before, after, actions=("update",)):
+    return json.dumps({"resource_changes": [{"address": "module.cluster.x", "type": rtype, "change": {
+        "actions": list(actions), "before": {attr: before}, "after": {attr: after}}}]})
+
+
+def test_version_skip_gate():
+    from devops_ai import plan_review as pr
+    assert pr.version_skips(_cluster_plan("aws_eks_cluster", "version", "1.31", "1.32")) == []
+    assert "next: 1.32" in pr.version_skips(_cluster_plan("aws_eks_cluster", "version", "1.31", "1.34"))[0]
+    assert pr.version_skips(_cluster_plan("aws_eks_cluster", "version", "1.33", "1.32"))  # downgrade
+    assert pr.version_skips(_cluster_plan("google_container_cluster", "min_master_version", "1.30.5-gke.1", "1.33"))
+    # a brand-new cluster may start at any version
+    assert pr.version_skips(_cluster_plan("aws_eks_cluster", "version", None, "1.34", ("create",))) == []
