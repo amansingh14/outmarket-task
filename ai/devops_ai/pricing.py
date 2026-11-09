@@ -1,8 +1,8 @@
 """Rough monthly cost model (USD, on-demand list prices, 730 h/month).
 
-The model never estimates cost itself; it would make numbers up. It picks
-size classes, and this table prices them deterministically so the proposed
-config can be checked against the budget in the developer's stated goal.
+The model never estimates cost itself; it would make numbers up. It picks size classes, and the
+price table in each cloud plugin (clouds/<name>/cloud.yaml) prices them deterministically, so a
+proposed profile can be checked against the budget in the developer's goal.
 Excludes egress, logging and taxes. Treat the result as an order of magnitude.
 """
 
@@ -10,43 +10,25 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from . import clouds
+
 if TYPE_CHECKING:
-    from .env_profile import EnvProfile
-
-NODE = {
-    "aws": {"small": 30.4, "medium": 60.7, "large": 140.2},   # t3.medium / t3.large / m6i.xlarge
-    "gcp": {"small": 24.5, "medium": 48.9, "large": 97.8},    # e2-medium / e2-standard-2 / e2-standard-4
-}
-DB = {
-    "aws": {"small": 11.7, "medium": 47.5, "large": 113.2},   # db.t4g.micro / medium / db.m6g.large
-    "gcp": {"small": 7.7, "medium": 80.7, "large": 101.1},    # db-f1-micro / custom-2-4096 / custom-2-8192
-}
-DB_STORAGE_PER_GB = {"aws": 0.115, "gcp": 0.17}
-SPOT_DISCOUNT = {"aws": 0.65, "gcp": 0.70}
-NAT = {"aws": 32.9, "gcp": 32.0}
-LOAD_BALANCER = {"aws": 18.0, "gcp": 18.3}
+    from .stack_profile import StackProfile
 
 
-def control_plane(cloud: str, zonal: bool) -> float:
-    if cloud == "aws":
-        return 73.0
-    # GKE's free tier credit covers one zonal cluster's management fee.
-    return 0.0 if zonal else 73.0
-
-
-def estimate_monthly_cost(profile: "EnvProfile", cloud: str) -> dict[str, float]:
-    nodes = NODE[cloud][profile.node_size] * profile.node_desired
+def estimate_monthly_cost(profile: StackProfile, cloud: str) -> dict[str, float]:
+    p = clouds.get(cloud).pricing
+    nodes = p["node"][profile.node_size] * profile.node_desired
     if profile.spot_nodes:
-        nodes *= 1 - SPOT_DISCOUNT[cloud]
+        nodes *= 1 - p["spot_discount"]
     ha = 2 if profile.db_high_availability else 1
-    db = DB[cloud][profile.db_size] * ha
-    storage = DB_STORAGE_PER_GB[cloud] * profile.db_storage_gb * ha
-    nat = NAT[cloud] * (3 if (cloud == "aws" and profile.db_high_availability) else 1)
+    database = (p["database"][profile.db_size] + p["database_storage_per_gb"] * profile.db_storage_gb) * ha
+    nat = p["nat_gateway"] * (p["nat_gateways_when_ha"] if profile.db_high_availability else 1)
     breakdown = {
-        "control_plane": control_plane(cloud, profile.zonal_control_plane),
+        "control_plane": p["control_plane"]["zonal" if profile.zonal_control_plane else "regional"],
         "nodes": nodes,
-        "database": db + storage,
-        "networking": nat + LOAD_BALANCER[cloud],
+        "database": database,
+        "networking": nat + p["load_balancer"],
     }
     breakdown = {k: round(v, 2) for k, v in breakdown.items()}
     breakdown["total"] = round(sum(breakdown.values()), 2)

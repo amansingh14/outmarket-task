@@ -13,8 +13,11 @@ RUN useradd --uid 10001 --create-home app
 COPY --from=builder /install /usr/local
 WORKDIR /srv
 COPY app ./app
+COPY alembic.ini ./
+COPY migrations ./migrations
+COPY --chmod=0755 start.sh ./
 USER 10001
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --start-period=20s \
   CMD python -c "import urllib.request,sys; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=2)" || exit 1
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]
+CMD ["./start.sh"]

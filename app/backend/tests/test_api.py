@@ -12,6 +12,7 @@ from app.main import app  # noqa: E402
 @pytest.fixture()
 def client():
     Base.metadata.drop_all(engine)
+    Base.metadata.create_all(engine)  # migrations own the schema in real deployments (test_migrations.py)
     with TestClient(app) as c:
         yield c
     Base.metadata.drop_all(engine)

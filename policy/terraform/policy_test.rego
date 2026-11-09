@@ -8,7 +8,7 @@ import rego.v1
 
 # ------------------------------------------------------------------ helpers
 plan(env, resources) := {
-	"variables": {"environment": {"value": env}},
+	"variables": {"stack": {"value": env}},
 	"resource_changes": [{
 		"address": r.address,
 		"mode": "managed",
@@ -21,7 +21,7 @@ plan(env, resources) := {
 
 ids(results) := {r.details.id | some r in results}
 
-tags := {"project": "idea-board", "environment": "staging", "managed-by": "terraform"}
+tags := {"project": "idea-board", "stack": "staging", "managed-by": "terraform"}
 
 good_rds := {"address": "module.database.aws_db_instance.this", "type": "aws_db_instance", "after": {
 	"storage_encrypted": true, "publicly_accessible": false, "backup_retention_period": 7,
@@ -47,7 +47,9 @@ good_vpc := {"address": "module.vpc.aws_vpc.this[0]", "type": "aws_vpc", "after"
 
 good_flow := {"address": "module.vpc.aws_flow_log.this[0]", "type": "aws_flow_log", "after": {"tags_all": tags}}
 
-good_aws := [good_rds, good_eks, good_lt, good_vpc, good_flow]
+good_cni := {"address": "module.cluster.module.eks.aws_eks_addon.this[\"vpc-cni\"]", "type": "aws_eks_addon", "after": {"addon_name": "vpc-cni", "configuration_values": "{\"enableNetworkPolicy\":\"true\"}", "tags_all": tags}}
+
+good_aws := [good_rds, good_eks, good_lt, good_vpc, good_flow, good_cni]
 
 with_after(r, patch) := object.union(r, {"after": object.union(r.after, patch)})
 
@@ -125,6 +127,7 @@ good_gke := {"address": "module.cluster.google_container_cluster.this", "type": 
 	"enable_legacy_abac": false,
 	"master_authorized_networks_config": [{"cidr_blocks": [{"cidr_block": "203.0.113.0/24"}]}],
 	"database_encryption": [{"state": "ENCRYPTED", "key_name": "k"}],
+	"datapath_provider": "ADVANCED_DATAPATH",
 	"terraform_labels": tags,
 }}
 
@@ -147,7 +150,12 @@ good_subnet := {
 	"after": {"log_config": [{"aggregation_interval": "INTERVAL_1_MIN"}]},
 }
 
-good_gcp := [good_sql, good_gke, good_pool, good_subnet]
+good_user := {
+	"address": "module.database.google_sql_user.this", "type": "google_sql_user",
+	"after": {"name": "ideas", "password": null, "password_wo_version": 1},
+}
+
+good_gcp := [good_sql, good_gke, good_pool, good_subnet, good_user]
 
 test_compliant_gcp_production_has_no_findings if {
 	count(gcp.deny) == 0 with input as plan("production", good_gcp)
@@ -218,6 +226,25 @@ test_expired_or_mismatched_waiver_still_blocks if {
 	bad := with_after(good_rds, {"storage_encrypted": false})
 	expired := [{"id": "AWS-RDS-001", "resource": "*", "expires": "2000-01-01"}]
 	"AWS-RDS-001" in ids(aws.deny) with input as plan("staging", [bad]) with data.waivers as expired
-	other_env := [{"id": "AWS-RDS-001", "resource": "*", "expires": "2999-01-01", "environments": ["production"]}]
+	other_env := [{"id": "AWS-RDS-001", "resource": "*", "expires": "2999-01-01", "stacks": ["production"]}]
 	"AWS-RDS-001" in ids(aws.deny) with input as plan("staging", [bad]) with data.waivers as other_env
+}
+
+# ------------------------------------------------- NetworkPolicy / secrets in state
+test_eks_without_network_policy_agent if {
+	"AWS-EKS-006" in ids(aws.deny) with input as plan("staging", [good_eks])
+	no_policy := with_after(good_cni, {"configuration_values": "{}"})
+	"AWS-EKS-006" in ids(aws.deny) with input as plan("staging", [good_eks, no_policy])
+	not "AWS-EKS-006" in ids(aws.deny) with input as plan("staging", [good_eks, good_cni])
+}
+
+test_gke_without_dataplane_v2 if {
+	legacy := with_after(good_gke, {"datapath_provider": "LEGACY_DATAPATH"})
+	"GKE-009" in ids(gcp.deny) with input as plan("staging", [legacy])
+}
+
+test_cloud_sql_password_in_state if {
+	leaky := with_after(good_user, {"password": "hunter2"})
+	"GCP-SQL-007" in ids(gcp.deny) with input as plan("staging", [leaky])
+	not "GCP-SQL-007" in ids(gcp.deny) with input as plan("staging", [good_user])
 }

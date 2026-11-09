@@ -5,7 +5,7 @@
 # severity: high   -> conftest `deny`  -> blocks the PR
 #           medium -> conftest `warn`  -> reported, does not block
 # cloud:    aws | gcp | all
-# environments: omit = all environments; otherwise only evaluated for these
+# stacks:  omit = all stacks; otherwise only evaluated for these (config/stacks/<stack>.yaml)
 #
 # Control references name the benchmark recommendation by title. Section numbers
 # change between benchmark versions; check the version your auditor uses.
@@ -29,13 +29,13 @@ catalog:
   AWS-RDS-004:
     cloud: aws
     severity: high
-    environments: [production, prod]
+    stacks: [production, prod]
     title: Production RDS has deletion protection
     controls: ["SOC 2 A1.2", "SOC 2 CC8.1"]
   AWS-RDS-005:
     cloud: aws
     severity: high
-    environments: [production, prod]
+    stacks: [production, prod]
     title: Production RDS is Multi-AZ
     controls: ["SOC 2 A1.2", "AWS Well-Architected REL10"]
   AWS-RDS-006:
@@ -78,6 +78,11 @@ catalog:
     severity: high
     title: EKS node root volumes are encrypted
     controls: ["CIS AWS Foundations: Ensure EBS volume encryption is enabled", "SOC 2 CC6.1"]
+  AWS-EKS-006:
+    cloud: aws
+    severity: high
+    title: EKS enforces Kubernetes NetworkPolicies (VPC CNI network policy agent)
+    controls: ["CIS Amazon EKS: Ensure Network Policy is enabled and set as appropriate", "SOC 2 CC6.6"]
   AWS-NET-001:
     cloud: aws
     severity: high
@@ -108,13 +113,13 @@ catalog:
   GCP-SQL-004:
     cloud: gcp
     severity: high
-    environments: [production, prod]
+    stacks: [production, prod]
     title: Production Cloud SQL has deletion protection
     controls: ["SOC 2 A1.2", "SOC 2 CC8.1"]
   GCP-SQL-005:
     cloud: gcp
     severity: high
-    environments: [production, prod]
+    stacks: [production, prod]
     title: Production Cloud SQL is regional (HA) with point-in-time recovery
     controls: ["SOC 2 A1.2", "Google Cloud Architecture Framework: Reliability"]
   GCP-SQL-006:
@@ -122,6 +127,11 @@ catalog:
     severity: medium
     title: Cloud SQL PostgreSQL audit/logging flags are set
     controls: ["CIS GCP Foundations: Cloud SQL for PostgreSQL logging flags (log_connections, log_disconnections, pgaudit)", "SOC 2 CC7.2"]
+  GCP-SQL-007:
+    cloud: gcp
+    severity: high
+    title: Cloud SQL user password is not stored in Terraform state (write-only)
+    controls: ["SOC 2 CC6.1", "ISO 27001 A.5.17"]
   GKE-001:
     cloud: gcp
     severity: high
@@ -162,6 +172,11 @@ catalog:
     severity: medium
     title: GKE encrypts Secrets at the application layer with Cloud KMS
     controls: ["CIS GKE: Ensure Kubernetes Secrets are encrypted using keys managed in Cloud KMS", "SOC 2 CC6.1"]
+  GKE-009:
+    cloud: gcp
+    severity: high
+    title: GKE enforces Kubernetes NetworkPolicies (Dataplane V2)
+    controls: ["CIS GKE: Ensure Network Policy is Enabled and set as appropriate", "SOC 2 CC6.6"]
   GCP-NET-001:
     cloud: gcp
     severity: high
@@ -177,5 +192,5 @@ catalog:
   TAG-001:
     cloud: all
     severity: high
-    title: Resources carry the required project / environment / managed-by tags or labels
+    title: Resources carry the required project / stack / managed-by tags or labels
     controls: ["SOC 2 CC6.1 (asset inventory)", "ISO 27001 A.5.9", "FinOps cost allocation"]

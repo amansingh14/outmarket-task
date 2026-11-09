@@ -1,0 +1,14 @@
+# Example service spec for `devops-ai scaffold-service` (generative IaC).
+# A developer describes the service in a few lines; the AI designs sizing, probes and scaling;
+# guardrails clamp the result; a renderer writes deploy/helm/values/services/notifier.yaml.
+name: notifier
+description: Sends an email digest of new ideas to subscribers every hour; consumes the ideas API.
+image: ghcr.io/amansingh14/idea-board-notifier
+language: go
+port: 9000
+public: false
+expected_rps: 2
+needs_database: false
+health_path: /healthz
+env:
+  IDEAS_API_URL: http://idea-board-backend:8000

@@ -27,12 +27,7 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: /metrics
     spec:
-      {{- with .Values.image.pullSecrets }}
-      imagePullSecrets:
-        {{- range . }}
-        - name: {{ . }}
-        {{- end }}
-      {{- end }}
+      {{- include "ib.pullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -52,7 +47,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ib.dbSecretName" . }}
-                  key: {{ .Values.database.secretKey }}
+                  key: DATABASE_URL
+            {{- if eq .Values.database.mode "embedded" }}
+            # Embedded previews: the database is created by this release, so migrate at startup.
+            - name: RUN_MIGRATIONS
+              value: "true"
+            {{- end }}
           readinessProbe:
             httpGet: { path: /api/ready, port: http }
             periodSeconds: 5

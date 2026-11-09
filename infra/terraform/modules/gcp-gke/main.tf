@@ -1,5 +1,13 @@
 variable "name" { type = string }
 variable "project_id" { type = string }
+variable "project_number" {
+  description = "Numeric project id; names the GKE service agent that uses the Secrets KMS key."
+  type        = string
+}
+variable "region" {
+  description = "Region of the cluster (the KMS key ring must live in the same region)."
+  type        = string
+}
 variable "location" {
   description = "A region (regional, HA control plane) or a zone (zonal, cheaper)."
   type        = string
@@ -57,6 +65,31 @@ resource "google_project_iam_member" "nodes" {
   member  = "serviceAccount:${google_service_account.nodes.email}"
 }
 
+# Envelope-encrypt Kubernetes Secrets in etcd with a customer-managed Cloud KMS key (policy GKE-008),
+# matching EKS's KMS secrets encryption. Key rings cannot be deleted, so the name gets a suffix.
+resource "random_id" "kms" {
+  byte_length = 2
+}
+
+resource "google_kms_key_ring" "gke" {
+  project  = var.project_id
+  name     = "${var.name}-gke-${random_id.kms.hex}"
+  location = var.region
+}
+
+resource "google_kms_crypto_key" "secrets" {
+  name            = "k8s-secrets"
+  key_ring        = google_kms_key_ring.gke.id
+  rotation_period = "7776000s" # 90 days
+  labels          = var.labels
+}
+
+resource "google_kms_crypto_key_iam_member" "gke_agent" {
+  crypto_key_id = google_kms_crypto_key.secrets.id
+  role          = "roles/cloudkms.cryptoKeyEncrypterDecrypter"
+  member        = "serviceAccount:service-${var.project_number}@container-engine-robot.iam.gserviceaccount.com"
+}
+
 resource "google_container_cluster" "this" {
   project  = var.project_id
   name     = var.name
@@ -65,6 +98,8 @@ resource "google_container_cluster" "this" {
   network         = var.network_name
   subnetwork      = var.subnetwork_name
   networking_mode = "VPC_NATIVE"
+  # Dataplane V2 (eBPF) enforces Kubernetes NetworkPolicies (policy GKE-009).
+  datapath_provider = "ADVANCED_DATAPATH"
 
   remove_default_node_pool = true
   initial_node_count       = 1
@@ -103,6 +138,13 @@ resource "google_container_cluster" "this" {
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
+
+  database_encryption {
+    state    = "ENCRYPTED"
+    key_name = google_kms_crypto_key.secrets.id
+  }
+
+  depends_on = [google_kms_crypto_key_iam_member.gke_agent]
 
   resource_labels = var.labels
 }

@@ -44,9 +44,13 @@ module "eks" {
   subnet_ids = var.subnet_ids
 
   cluster_addons = {
-    coredns                = {}
-    kube-proxy             = {}
-    vpc-cni                = { before_compute = true }
+    coredns    = {}
+    kube-proxy = {}
+    vpc-cni = {
+      before_compute = true
+      # Enforce Kubernetes NetworkPolicies with the VPC CNI's eBPF agent (policy AWS-EKS-006).
+      configuration_values = jsonencode({ enableNetworkPolicy = "true" })
+    }
     eks-pod-identity-agent = {}
   }
 

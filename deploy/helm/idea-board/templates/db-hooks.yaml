@@ -1,0 +1,119 @@
+{{- if eq .Values.database.mode "external" }}
+{{- include "ib.validateDb" . }}
+{{- $name := include "ib.dbSecretName" . -}}
+{{- $user := include "ib.appUser" . -}}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name -}}
+{{- $password := "" -}}
+{{- if and $existing (index $existing.data "APP_PASSWORD") }}
+{{- $password = index $existing.data "APP_PASSWORD" | b64dec -}}
+{{- else }}
+{{- $password = randAlphaNum 32 -}}
+{{- end }}
+{{- $backend := dict "root" . "component" "backend" -}}
+# 1) The app's own credentials. A hook resource so it exists before the hook Jobs run;
+#    `lookup` keeps the password stable across upgrades.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-10"
+    helm.sh/hook-delete-policy: before-hook-creation
+type: Opaque
+stringData:
+  APP_PASSWORD: {{ $password | quote }}
+  DATABASE_URL: "postgresql+psycopg://{{ $user }}:{{ $password }}@{{ .Values.database.host }}:{{ .Values.database.port }}/{{ .Values.database.name }}?sslmode={{ .Values.database.sslmode }}"
+---
+# 2) Provision this environment's login + database with the admin credentials (python -m app.dbadmin).
+#    The admin Secret is referenced only here, never by the application pods.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ib.fullname" . }}-db-provision
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "-5"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 4
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        {{- include "ib.labels" . | nindent 8 }}
+        app.kubernetes.io/component: db-provision
+    spec:
+      restartPolicy: OnFailure
+      {{- include "ib.pullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: provision
+          image: {{ include "ib.image" $backend }}
+          command: ["python", "-m", "app.dbadmin", "provision"]
+          env:
+            - name: ADMIN_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ .Values.database.adminSecret }}, key: {{ .Values.database.adminSecretKey }} } }
+            - name: APP_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $name }}, key: APP_PASSWORD } }
+            - { name: DB_NAME, value: {{ .Values.database.name | quote }} }
+            - { name: APP_USER, value: {{ $user | quote }} }
+            - { name: CREATE_DATABASE, value: {{ .Values.database.createDatabase | quote }} }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: 300m, memory: 192Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+{{- if .Values.migrations.enabled }}
+---
+# 3) Schema migrations, once per release, with the app's own (least-privilege) login.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ib.fullname" . }}-migrate
+  labels:
+    {{- include "ib.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: pre-install,pre-upgrade
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        {{- include "ib.labels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      {{- include "ib.pullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: migrate
+          image: {{ include "ib.image" $backend }}
+          command: ["alembic", "upgrade", "head"]
+          env:
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ $name }}, key: DATABASE_URL } }
+          resources:
+            requests: { cpu: 20m, memory: 96Mi }
+            limits: { cpu: 300m, memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+{{- end }}
+{{- end }}

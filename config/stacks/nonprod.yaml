@@ -1,6 +1,6 @@
 # Sizing for the shared non-prod stack (hosts development, staging and qa).
-# Review changes in a PR; `devops-ai env-profile` can propose a new version from a goal.
-environment: nonprod
+# Review changes in a PR; `devops-ai stack-profile` can propose a new version from a goal.
+stack: nonprod
 tier: staging
 node_size: small
 node_min: 2
