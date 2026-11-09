@@ -33,3 +33,10 @@ output "database_url" {
   value     = "postgresql+psycopg://${module.database.username}:${module.database.password}@${module.database.host}:${module.database.port}/${module.database.db_name}?sslmode=require"
   sensitive = true
 }
+
+# libpq-format URL for the master user, used in-cluster by the Helm db-init hook to create
+# per-environment databases on the shared non-prod instance. The pipeline masks it.
+output "database_admin_url" {
+  value     = "postgresql://${module.database.username}:${module.database.password}@${module.database.host}:${module.database.port}/${module.database.db_name}?sslmode=require"
+  sensitive = true
+}
