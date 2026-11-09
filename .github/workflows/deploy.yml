@@ -281,8 +281,15 @@ jobs:
             exit 0
           fi
           {
-            if [ "$KIND" = promote ]; then
-              echo "Promote **\`$HEAD\`** → **\`$BASE\`**. \`$ENVIRONMENT\` was deployed and passed its health check."
+            deployed=$(jq -s '[.[] | select(.status == "deployed")] | length' results/*.json)
+            total=$(jq -s 'length' results/*.json)
+            if [ "$KIND" = promote ] && [ "$deployed" = "$total" ]; then
+              echo "Promote **\`$HEAD\`** → **\`$BASE\`**. \`$ENVIRONMENT\` was deployed to all $total cloud(s) and passed its health check."
+            elif [ "$KIND" = promote ]; then
+              echo "Promote **\`$HEAD\`** → **\`$BASE\`**."
+              echo
+              echo "> [!WARNING]"
+              echo "> \`$ENVIRONMENT\` was deployed to only $deployed of $total cloud(s); the rest were skipped (see the table). CI passed, but this change has **not** been verified in a running \`$ENVIRONMENT\` environment."
             else
               echo "Back-merge **\`$HEAD\`** → **\`$BASE\`** so the production hotfix isn't lost on the next release."
             fi
