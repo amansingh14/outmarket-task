@@ -94,7 +94,8 @@ jobs:
 
       - name: Vulnerability scan (fixable CRITICAL fails the build)
         if: steps.exists.outputs.found != 'true'
-        uses: aquasecurity/trivy-action@0.28.0
+        # Pinned to the commit behind tag v0.36.0: a moved tag can't change what runs here.
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}:${{ env.TAG }}
           severity: CRITICAL
