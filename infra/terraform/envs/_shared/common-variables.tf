@@ -26,9 +26,9 @@ variable "region" {
 }
 
 variable "kubernetes_version" {
-  description = "Used on AWS; GKE follows its release channel. Raise one minor at a time on a live cluster (target 1.34)."
+  description = "Used on AWS; GKE follows its release channel. Raise one minor version at a time on a live cluster."
   type        = string
-  default     = "1.33"
+  default     = "1.34"
 }
 
 variable "node_size" {

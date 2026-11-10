@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -28,7 +28,7 @@ class Idea(Base):
         DateTime(timezone=True),
         nullable=False,
         index=True,  # ix_ideas_created_at, created by migration 0001
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -56,7 +56,7 @@ def wait_for_db(attempts: int = 30, delay: float = 2.0) -> None:
                 conn.execute(text("SELECT 1"))
             log.info("database ready (attempt %s)", attempt)
             return
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             log.warning("database not ready (attempt %s): %s", attempt, exc)
             time.sleep(delay)
     raise RuntimeError("database never became ready")

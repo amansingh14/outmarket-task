@@ -57,8 +57,7 @@ module "eks" {
   eks_managed_node_groups = {
     default = {
       # Bottlerocket: minimal, immutable, container-only OS (no shell/package manager, dm-verity
-      # root, SELinux enforcing). Replaced the AL2023 nodes, whose 1.32 update failed to join
-      # (NodeCreationFailure). Changing ami_type creates a new node group before deleting the old.
+      # root, SELinux enforcing). Changing ami_type creates a new node group before deleting the old.
       ami_type       = "BOTTLEROCKET_x86_64"
       instance_types = [var.instance_type]
       capacity_type  = var.spot ? "SPOT" : "ON_DEMAND"
@@ -67,8 +66,7 @@ module "eks" {
       desired_size   = var.node_desired
 
       # Version upgrades drain one node at a time and respect PodDisruptionBudgets during EKS's
-      # retry window; after that, force the eviction instead of leaving the upgrade InProgress
-      # forever (a single-replica workload with minAvailable 1 blocked the 1.33 node rollout).
+      # retry window; after that, force the eviction instead of leaving the upgrade InProgress.
       force_update_version = true
       update_config        = { max_unavailable = 1 }
 
