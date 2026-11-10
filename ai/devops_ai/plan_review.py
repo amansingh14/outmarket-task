@@ -53,8 +53,8 @@ def destructive_stateful(changes: list[Change]) -> list[Change]:
 
 
 # Managed Kubernetes control planes upgrade one minor version at a time and never downgrade.
-# Terraform's plan cannot know this; the apply fails halfway (EKS: "Unsupported Kubernetes minor
-# version update from 1.31 to 1.34"). Catch it at plan time instead.
+# Terraform's plan cannot know this and the apply fails halfway ("Unsupported Kubernetes minor
+# version update"). Catch it at plan time instead.
 K8S_VERSION_ATTR = {"aws_eks_cluster": "version", "google_container_cluster": "min_master_version"}
 
 

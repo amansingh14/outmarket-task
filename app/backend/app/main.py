@@ -110,7 +110,7 @@ def ready():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.error("readiness check failed: %s", exc)
         raise HTTPException(status_code=503, detail="database unavailable") from exc
     return {"status": "ready"}
