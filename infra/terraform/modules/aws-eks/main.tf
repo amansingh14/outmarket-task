@@ -66,6 +66,12 @@ module "eks" {
       max_size       = var.node_max
       desired_size   = var.node_desired
 
+      # Version upgrades drain one node at a time and respect PodDisruptionBudgets during EKS's
+      # retry window; after that, force the eviction instead of leaving the upgrade InProgress
+      # forever (a single-replica workload with minAvailable 1 blocked the 1.33 node rollout).
+      force_update_version = true
+      update_config        = { max_unavailable = 1 }
+
       # Bottlerocket has two volumes: a small OS volume (xvda) and a data volume (xvdb) for
       # container images and ephemeral storage. Both encrypted (AWS-EKS-005); `disk_size` is
       # ignored with the module's custom launch template.
