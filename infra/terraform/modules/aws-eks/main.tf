@@ -56,19 +56,31 @@ module "eks" {
 
   eks_managed_node_groups = {
     default = {
-      # Amazon Linux 2 node images stop at Kubernetes 1.32; AL2023 is required from 1.33.
-      ami_type       = "AL2023_x86_64_STANDARD"
+      # Bottlerocket: minimal, immutable, container-only OS (no shell/package manager, dm-verity
+      # root, SELinux enforcing). Replaced the AL2023 nodes, whose 1.32 update failed to join
+      # (NodeCreationFailure). Changing ami_type creates a new node group before deleting the old.
+      ami_type       = "BOTTLEROCKET_x86_64"
       instance_types = [var.instance_type]
       capacity_type  = var.spot ? "SPOT" : "ON_DEMAND"
       min_size       = var.node_min
       max_size       = var.node_max
       desired_size   = var.node_desired
 
-      # `disk_size` is ignored when the module uses its custom launch template (the default),
-      # so the root volume is declared explicitly, encrypted (AWS-EKS-005).
+      # Bottlerocket has two volumes: a small OS volume (xvda) and a data volume (xvdb) for
+      # container images and ephemeral storage. Both encrypted (AWS-EKS-005); `disk_size` is
+      # ignored with the module's custom launch template.
       block_device_mappings = {
         xvda = {
           device_name = "/dev/xvda"
+          ebs = {
+            volume_size           = 4
+            volume_type           = "gp3"
+            encrypted             = true
+            delete_on_termination = true
+          }
+        }
+        xvdb = {
+          device_name = "/dev/xvdb"
           ebs = {
             volume_size           = 30
             volume_type           = "gp3"
