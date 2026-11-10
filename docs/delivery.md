@@ -43,9 +43,10 @@ ci.yml
 ├─ gate
 ├─ resolve ─ devops-ai delivery resolve --branch <branch>
 ├─ infra ─ infra.yml (only if this branch owns a stack AND infra files changed)
-│          plan → AI plan review + destructive gate → apply in environment infra-<stack>
+│          plan every cloud → AI plan review + gates → targets: keep clouds whose plan changes
+│          something → apply only those, in environment infra-<stack>
 └─ deploy ─ deploy.yml (after infra succeeded or was skipped)
-           per cloud, in environment <env>: scripts/deploy.sh
+           per cloud, in environment <env>: scripts/deploy.sh (skips if already running this release)
            then: promotion PR to the next branch (or back-merge PR from production)
 ```
 
@@ -68,11 +69,16 @@ ci.yml
    `clouds/<cloud>/db-admin-url.sh`. The password is masked in logs and never stored in Terraform state.
 3. Create the namespace and the admin Secret, which only the provisioning hook reads. Add the GHCR
    pull secret if configured.
-4. Take a **baseline** of the running release (probes, error counts, restarts).
-5. Run `helm upgrade --install` with the environment's values (`devops-ai delivery env-values`)
+4. **Change detection.** Fingerprint the desired release: chart files, rendered values, image tags
+   (content-addressed, so they change exactly when app code changes), DB endpoint. If the cluster
+   already runs that fingerprint, the release status is `deployed` and every Deployment is ready,
+   stop here with status `unchanged`. A new cluster, a failed or rolled-back release, or unready pods
+   always deploy. `Deploy → force` overrides.
+5. Take a **baseline** of the running release (probes, error counts, restarts).
+6. Run `helm upgrade --install` with the environment's values (`devops-ai delivery env-values`)
    and the content-addressed image tags. Hooks: create the environment's own login and database,
    then `alembic upgrade head`.
-6. Wait for the load balancer address, then run `devops-ai health-check` with `--baseline`,
+7. Wait for the load balancer address and for it to route (5 consecutive 200s), then run `devops-ai health-check` with `--baseline`,
    `--rollback` and, if Helm failed, `--helm-failed`. Exit code 1 rolls back and stops the promotion.
 
 `DEPLOY_TARGET=env` points the same script at any cluster: the current kube context plus
