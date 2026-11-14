@@ -1,7 +1,10 @@
 variable "name" { type = string }
 variable "vpc_id" { type = string }
 variable "subnet_group_name" { type = string }
-variable "allowed_security_group_ids" { type = list(string) }
+variable "allowed_security_group_ids" {
+  description = "Security groups allowed to reach PostgreSQL, keyed by a static name (keys must be known at plan time)."
+  type        = map(string)
+}
 variable "instance_class" { type = string }
 variable "engine_version" {
   type    = string
@@ -36,11 +39,6 @@ variable "tags" {
   default = {}
 }
 
-resource "random_password" "db" {
-  length  = 32
-  special = false # keeps the password URL-safe inside DATABASE_URL
-}
-
 resource "aws_security_group" "db" {
   name_prefix = "${var.name}-db-"
   description = "PostgreSQL access from the Kubernetes workloads only"
@@ -53,14 +51,14 @@ resource "aws_security_group" "db" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "from_workloads" {
-  for_each = toset(var.allowed_security_group_ids)
+  for_each = var.allowed_security_group_ids
 
   security_group_id            = aws_security_group.db.id
   referenced_security_group_id = each.value
   ip_protocol                  = "tcp"
   from_port                    = 5432
   to_port                      = 5432
-  description                  = "PostgreSQL from EKS"
+  description                  = "PostgreSQL from EKS (${each.key})"
 }
 
 resource "aws_db_instance" "this" {
@@ -76,7 +74,9 @@ resource "aws_db_instance" "this" {
 
   db_name  = var.db_name
   username = var.username
-  password = random_password.db.result
+  # RDS generates and rotates the master password in Secrets Manager, so it never enters
+  # Terraform state (policy AWS-RDS-008). The pipeline reads it via clouds/aws/db-admin-url.sh.
+  manage_master_user_password = true
 
   db_subnet_group_name   = var.subnet_group_name
   vpc_security_group_ids = [aws_security_group.db.id]
@@ -101,7 +101,7 @@ output "host" { value = aws_db_instance.this.address }
 output "port" { value = aws_db_instance.this.port }
 output "db_name" { value = var.db_name }
 output "username" { value = var.username }
-output "password" {
-  value     = random_password.db.result
-  sensitive = true
+output "admin_secret" {
+  description = "ARN of the RDS-managed Secrets Manager secret with the master credentials."
+  value       = aws_db_instance.this.master_user_secret[0].secret_arn
 }

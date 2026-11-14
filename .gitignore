@@ -28,3 +28,9 @@ build/
 results/
 report.md
 .env
+
+# Local tool settings
+.claude/settings.local.json
+
+# Personal interview-prep notes (not for the public repo)
+docs/codebase-guide.md

@@ -27,12 +27,7 @@ spec:
         prometheus.io/port: "8000"
         prometheus.io/path: /metrics
     spec:
-      {{- with .Values.image.pullSecrets }}
-      imagePullSecrets:
-        {{- range . }}
-        - name: {{ . }}
-        {{- end }}
-      {{- end }}
+      {{- include "ib.pullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -52,7 +47,12 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: {{ include "ib.dbSecretName" . }}
-                  key: {{ .Values.database.secretKey }}
+                  key: DATABASE_URL
+            {{- if eq .Values.database.mode "embedded" }}
+            # Embedded previews: the database is created by this release, so migrate at startup.
+            - name: RUN_MIGRATIONS
+              value: "true"
+            {{- end }}
           readinessProbe:
             httpGet: { path: /api/ready, port: http }
             periodSeconds: 5
@@ -105,7 +105,11 @@ spec:
         name: cpu
         target: { type: Utilization, averageUtilization: {{ .Values.backend.autoscaling.targetCPUUtilizationPercentage }} }
 {{- end }}
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* A PDB is only useful when a pod can be evicted while others keep serving. With one
+     replica and minAvailable 1 it allows zero disruptions, so node drains (EKS/GKE version
+     upgrades) can never finish. Render it only when the minimum replica count exceeds it. */}}
+{{- $minPods := ternary .Values.backend.autoscaling.minReplicas .Values.backend.replicas .Values.backend.autoscaling.enabled }}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int $minPods) (int .Values.podDisruptionBudget.minAvailable)) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

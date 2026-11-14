@@ -1,0 +1,8 @@
+apiVersion: v2
+name: microservice
+description: >-
+  Generic chart for new services on the platform. `devops-ai scaffold-service` turns a short
+  spec (services/<name>.yaml) into a values file for this chart (deploy/helm/values/services/).
+type: application
+version: 1.0.0
+appVersion: "1.0.0"

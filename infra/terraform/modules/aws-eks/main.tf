@@ -44,25 +44,47 @@ module "eks" {
   subnet_ids = var.subnet_ids
 
   cluster_addons = {
-    coredns                = {}
-    kube-proxy             = {}
-    vpc-cni                = { before_compute = true }
+    coredns    = {}
+    kube-proxy = {}
+    vpc-cni = {
+      before_compute = true
+      # Enforce Kubernetes NetworkPolicies with the VPC CNI's eBPF agent (policy AWS-EKS-006).
+      configuration_values = jsonencode({ enableNetworkPolicy = "true" })
+    }
     eks-pod-identity-agent = {}
   }
 
   eks_managed_node_groups = {
     default = {
+      # Bottlerocket: minimal, immutable, container-only OS (no shell/package manager, dm-verity
+      # root, SELinux enforcing). Changing ami_type creates a new node group before deleting the old.
+      ami_type       = "BOTTLEROCKET_x86_64"
       instance_types = [var.instance_type]
       capacity_type  = var.spot ? "SPOT" : "ON_DEMAND"
       min_size       = var.node_min
       max_size       = var.node_max
       desired_size   = var.node_desired
 
-      # `disk_size` is ignored when the module uses its custom launch template (the default),
-      # so the root volume is declared explicitly, encrypted (AWS-EKS-005).
+      # Version upgrades drain one node at a time and respect PodDisruptionBudgets during EKS's
+      # retry window; after that, force the eviction instead of leaving the upgrade InProgress.
+      force_update_version = true
+      update_config        = { max_unavailable = 1 }
+
+      # Bottlerocket has two volumes: a small OS volume (xvda) and a data volume (xvdb) for
+      # container images and ephemeral storage. Both encrypted (AWS-EKS-005); `disk_size` is
+      # ignored with the module's custom launch template.
       block_device_mappings = {
         xvda = {
           device_name = "/dev/xvda"
+          ebs = {
+            volume_size           = 4
+            volume_type           = "gp3"
+            encrypted             = true
+            delete_on_termination = true
+          }
+        }
+        xvdb = {
+          device_name = "/dev/xvdb"
           ebs = {
             volume_size           = 30
             volume_type           = "gp3"
@@ -101,5 +123,8 @@ output "cluster_endpoint" { value = module.eks.cluster_endpoint }
 output "cluster_ca_certificate" { value = module.eks.cluster_certificate_authority_data }
 output "workload_security_group_ids" {
   description = "Security groups attached to nodes/pods; the database allows ingress from these."
-  value       = [module.eks.node_security_group_id, module.eks.cluster_primary_security_group_id]
+  value = {
+    nodes   = module.eks.node_security_group_id
+    cluster = module.eks.cluster_primary_security_group_id
+  }
 }

@@ -17,7 +17,7 @@ metadata:
 type: Opaque
 stringData:
   POSTGRES_PASSWORD: {{ $password | quote }}
-  {{ .Values.database.secretKey }}: postgresql+psycopg://ideas:{{ $password }}@{{ $name }}:5432/ideas
+  DATABASE_URL: postgresql+psycopg://ideas:{{ $password }}@{{ $name }}:5432/ideas
 ---
 apiVersion: v1
 kind: Service

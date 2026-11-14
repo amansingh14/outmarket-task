@@ -14,7 +14,7 @@ from pathlib import Path
 
 import yaml
 
-from . import env_profile
+from . import clouds, stack_profile
 
 DB_NAME = re.compile(r"^[a-z_][a-z0-9_]{0,62}$")
 K8S_NAME = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$")
@@ -104,12 +104,17 @@ class Delivery:
     def infra_matrix(self, stack: str) -> dict:
         return {"include": [{"stack": stack, "cloud": c} for c in self.stack_clouds(stack)]}
 
+    def compliance_matrix(self) -> dict:
+        """Every (cloud, stack) pair that is actually deployed, for the PR compliance gate."""
+        return {"include": [{"stack": s, "cloud": c} for s in self.stacks for c in self.stack_clouds(s)]}
+
     # --------------------------------------------------------------- values
     def env_values(self, env_name: str, repo: Path) -> dict:
-        """Helm values for one environment: stack sizing profile + per-env overrides + DB wiring."""
+        """Helm values for one environment: stack sizing profile + per-env overrides + DB wiring.
+        The database host comes from Terraform outputs at deploy time (scripts/deploy.sh)."""
         e = self.environments[env_name]
-        profile = env_profile.load(repo / "config" / "environments" / f"{self.stacks[e.stack]['profile']}.yaml")
-        values = env_profile.helm_values(profile)
+        profile = stack_profile.load(repo / "config" / "stacks" / f"{e.stack}.yaml")
+        values = stack_profile.helm_values(profile)
         _deep_merge(values, copy.deepcopy(e.helm))
         if any(_get(e.helm, [c, "replicas"]) for c in ("backend", "frontend")):
             # Fixed replica overrides only make sense without an HPA fighting them.
@@ -117,8 +122,7 @@ class Delivery:
                 values[c]["autoscaling"]["enabled"] = False
                 values[c]["autoscaling"]["minReplicas"] = values[c]["replicas"]
         values["podDisruptionBudget"] = {"enabled": values["backend"]["replicas"] > 1}
-        values["database"] = {"mode": "external", "existingSecret": "idea-board-db",
-                              "createDatabase": e.create_database, "name": e.database}
+        values["database"] = {"mode": "external", "name": e.database, "createDatabase": e.create_database}
         values["environment"] = e.name
         return values
 
@@ -156,8 +160,8 @@ def validate(d: Delivery) -> None:
     for e in d.environments.values():
         if e.stack not in d.stacks:
             errors.append(f"{e.name}: unknown stack {e.stack}")
-        if not e.clouds or not set(e.clouds) <= {"aws", "gcp"}:
-            errors.append(f"{e.name}: clouds must be a non-empty subset of [aws, gcp]")
+        if not e.clouds or not set(e.clouds) <= set(clouds.names()):
+            errors.append(f"{e.name}: clouds must be a non-empty subset of {clouds.names()} (folders under clouds/)")
         if e.promote_to and e.promote_to not in d.environments:
             errors.append(f"{e.name}: promote_to {e.promote_to} is not an environment")
         if not DB_NAME.match(e.database):

@@ -1,6 +1,6 @@
 # Cloud-neutral size classes -> provider-specific SKUs.
 #
-# Everything upstream of Terraform (developers, the AI env-profile generator,
+# Everything upstream of Terraform (developers, the AI stack-profile generator,
 # the pipeline) speaks in "small / medium / large". Only this module knows that
 # "medium" means t3.large on AWS and e2-standard-2 on GCP. Adding a third cloud
 # means adding one column here, not touching any caller.

@@ -5,32 +5,29 @@
 #                                          production ─(back-merge PR)─▶ development
 #
 # Pipelines read this file (via `devops-ai delivery ...`); changing where an environment runs
-# is a one-line edit here, e.g. add `gcp` to qa.clouds.
+# is a one-line edit here, e.g. add `gcp` to qa.clouds. Valid clouds = folders under clouds/.
 
 registry: ghcr.io
 
 # Terraform stacks (one cluster + one managed DB instance per cloud).
 # `apply_from`: the branch whose merges run `terraform apply` for this stack.
-# `profile`:    sizing profile in config/environments/<profile>.yaml
+# Sizing lives in config/stacks/<stack>.yaml; clouds come from the environments using the stack.
 stacks:
   nonprod:
     apply_from: development
-    profile: nonprod
   preprod:
     apply_from: preprod
-    profile: preprod
   production:
     apply_from: production
-    profile: production
 
 environments:
   development:
     branch: development
     stack: nonprod
-    clouds: [aws]
+    clouds: [aws, gcp] # both clouds, so the shared nonprod stack is exercised on AWS and GCP
     namespace: development
     database: ideas_development
-    create_database: true # shares the nonprod DB instance; a Helm hook creates this database
+    create_database: true # shares the nonprod DB instance; the provisioning hook creates it
     promote_to: staging
     helm:
       backend: { replicas: 1, logLevel: DEBUG }

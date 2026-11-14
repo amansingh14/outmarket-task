@@ -49,15 +49,16 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--results", required=True)
     ap.add_argument("--catalog", default="policy/data/catalog.yaml")
-    ap.add_argument("--clouds", default="aws,gcp")
-    ap.add_argument("--envs", default="nonprod,preprod,production")
+    ap.add_argument("--columns", required=True,
+                    help="comma-separated cloud/stack pairs, e.g. aws/nonprod,gcp/production "
+                         "(from `devops-ai delivery compliance-matrix`)")
     ap.add_argument("--out")
     a = ap.parse_args()
 
     res = Path(a.results)
     catalog: dict = yaml.safe_load(Path(a.catalog).read_text())["catalog"]
-    clouds, envs = a.clouds.split(","), a.envs.split(",")
-    columns = [(c, e) for c in clouds for e in envs]
+    columns = [tuple(col.split("/", 1)) for col in a.columns.split(",") if col]
+    clouds = list(dict.fromkeys(c for c, _ in columns))
     blocking: list[str] = []
 
     # ---------------------------------------------------------------- validate
@@ -104,7 +105,7 @@ def main() -> int:
 
     def cell(pid: str, meta: dict, col) -> str:
         c, e = col
-        if meta["cloud"] not in ("all", c) or (meta.get("environments") and e not in meta["environments"]):
+        if meta["cloud"] not in ("all", c) or (meta.get("stacks") and e not in meta["stacks"]):
             return ICON["na"]
         st = col_state[col]
         if st.startswith("skipped"):
@@ -149,7 +150,7 @@ def main() -> int:
            "| Root | fmt | init | validate | Notes |", "|---|:-:|:-:|:-:|---|", *validate_rows]
 
     md += ["", "### 2. OPA policy results", "",
-           "Evaluated against the **full planned state** of each environment, so module defaults are covered too. "
+           "Evaluated against the **full planned state** of each stack, so module defaults are covered too. "
            f"Legend: {ICON['pass']} pass · {ICON['fail']} blocking · {ICON['warn']} warning · {ICON['waived']} waived · "
            f"{ICON['na']} not applicable · {ICON['skipped']} skipped · {ICON['error']} could not evaluate", ""]
     md.append("| Policy | Sev | Control | " + " | ".join(f"{c}/{e}" for c, e in columns) + " |")
@@ -175,7 +176,7 @@ def main() -> int:
            "- **Fix**: change the Terraform so the rule passes; policy logic lives in `policy/terraform/*.rego`.",
            "- **Waive** (time-boxed, reviewed): add an entry to `policy/data/waivers.yaml` with owner, reason and "
            "expiry. The finding stays visible as 🟦 and blocks again after the expiry date.",
-           "- **Run locally**: `scripts/policy-check.sh gcp staging` (needs terraform, conftest; AWS needs credentials).",
+           "- **Run locally**: `scripts/policy-check.sh gcp preprod` (needs terraform + conftest; AWS also needs credentials).",
            "- **Mapping**: control names come from `policy/data/catalog.yaml`. They show which control a check "
            "supports; passing them does not by itself make you CIS-certified or SOC 2 compliant.",
            "</details>"]

@@ -1,0 +1,37 @@
+# Defaults; scaffolded values files (deploy/helm/values/services/*.yaml) override these.
+nameOverride: ""
+
+image:
+  repository: ghcr.io/example/service
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+replicas: 1
+containerPort: 8080
+env: []                       # [{name, value}] non-secret configuration only
+
+database:
+  enabled: false              # inject DATABASE_URL from an existing Secret
+  existingSecret: ""
+  secretKey: DATABASE_URL
+
+resources:
+  requests: { cpu: 50m, memory: 64Mi }
+  limits: { cpu: 250m, memory: 128Mi }
+
+readinessProbe: { path: /healthz, initialDelaySeconds: 3, periodSeconds: 5 }
+livenessProbe: { path: /healthz, initialDelaySeconds: 10, periodSeconds: 10 }
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
+
+service:
+  type: ClusterIP             # LoadBalancer only for services the spec marks public
+  port: 80
+
+podDisruptionBudget:
+  minAvailable: 0             # 0 = no PDB

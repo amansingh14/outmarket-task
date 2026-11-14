@@ -21,13 +21,18 @@ variable "project_id" {
   type        = string
 }
 
+variable "project_number" {
+  description = "GCP only: numeric project number (gcloud projects describe <id> --format='value(projectNumber)')."
+  type        = string
+}
+
 locals {
   cloud = "gcp"
-  name  = "${var.project_name}-${var.environment}"
+  name  = "${var.project_name}-${var.stack}"
   labels = merge({
-    project     = var.project_name
-    environment = var.environment
-    managed-by  = "terraform"
+    project    = var.project_name
+    stack      = var.stack
+    managed-by = "terraform"
   }, var.extra_tags)
   # Zonal = one control plane in zone "a" (cheaper); regional = HA across zones.
   gke_location = var.zonal_control_plane ? "${var.region}-a" : var.region
@@ -45,6 +50,8 @@ resource "google_project_service" "apis" {
     "container.googleapis.com",
     "sqladmin.googleapis.com",
     "servicenetworking.googleapis.com",
+    "secretmanager.googleapis.com",
+    "cloudkms.googleapis.com",
   ])
   project            = var.project_id
   service            = each.value
@@ -70,6 +77,8 @@ module "cluster" {
   source              = "../../modules/gcp-gke"
   name                = local.name
   project_id          = var.project_id
+  project_number      = var.project_number
+  region              = var.region
   location            = local.gke_location
   network_name        = module.network.network_name
   subnetwork_name     = module.network.subnetwork_name

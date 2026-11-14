@@ -25,11 +25,11 @@ variable "admin_principal_arns" {
 
 locals {
   cloud = "aws"
-  name  = "${var.project_name}-${var.environment}"
+  name  = "${var.project_name}-${var.stack}"
   tags = merge({
-    project     = var.project_name
-    environment = var.environment
-    managed-by  = "terraform"
+    project    = var.project_name
+    stack      = var.stack
+    managed-by = "terraform"
   }, var.extra_tags)
 }
 

@@ -7,7 +7,7 @@ deny contains r if some r in lib.blocking(findings)
 
 warn contains r if some r in lib.advisory(findings)
 
-required_keys := {"project", "environment", "managed-by"}
+required_keys := {"project", "stack", "managed-by"}
 
 # AWS: tags_all includes provider default_tags. GCP: terraform_labels includes default_labels.
 tag_attribute := {"tags_all", "terraform_labels"}

@@ -1,5 +1,6 @@
-# Output contract: identical names on every cloud, so the pipeline never
-# branches on provider after `terraform apply`.
+# Output contract: identical names on every cloud, so the pipeline never branches on provider
+# after `terraform apply`. No output contains a secret: database credentials are fetched from the
+# cloud's secret store by clouds/<cloud>/db-admin-url.sh.
 
 output "cloud" {
   value = local.cloud
@@ -29,14 +30,19 @@ output "database_host" {
   value = module.database.host
 }
 
-output "database_url" {
-  value     = "postgresql+psycopg://${module.database.username}:${module.database.password}@${module.database.host}:${module.database.port}/${module.database.db_name}?sslmode=require"
-  sensitive = true
+output "database_port" {
+  value = module.database.port
 }
 
-# libpq-format URL for the master user, used in-cluster by the Helm db-init hook to create
-# per-environment databases on the shared non-prod instance. The pipeline masks it.
-output "database_admin_url" {
-  value     = "postgresql://${module.database.username}:${module.database.password}@${module.database.host}:${module.database.port}/${module.database.db_name}?sslmode=require"
-  sensitive = true
+output "database_name" {
+  value = module.database.db_name
+}
+
+output "database_admin_username" {
+  value = module.database.username
+}
+
+output "database_admin_secret" {
+  description = "Where the admin password lives in the cloud's secret store (never in state)."
+  value       = module.database.admin_secret
 }

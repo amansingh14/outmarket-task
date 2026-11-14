@@ -25,11 +25,11 @@ arr(x) := x if is_array(x)
 
 arr(x) := [] if not is_array(x)
 
-environment := object.get(input, ["variables", "environment", "value"], "unknown")
+stack := object.get(input, ["variables", "stack", "value"], "unknown")
 
 applies(id) if {
-	envs := object.get(data.catalog[id], "environments", [environment])
-	environment in envs
+	stacks := object.get(data.catalog[id], "stacks", [stack])
+	stack in stacks
 }
 
 waiver_list := w if {
@@ -41,7 +41,7 @@ waived(id, address) if {
 	some w in waiver_list
 	w.id == id
 	glob.match(object.get(w, "resource", "*"), null, address)
-	environment in object.get(w, "environments", [environment])
+	stack in object.get(w, "stacks", [stack])
 	regex.match(`^\d{4}-\d{2}-\d{2}$`, w.expires)
 	today < w.expires # ISO dates compare correctly as strings (and never overflow, unlike ns timestamps)
 }
@@ -57,7 +57,7 @@ result(v, is_waived) := {
 		"severity": data.catalog[v.id].severity,
 		"title": data.catalog[v.id].title,
 		"controls": data.catalog[v.id].controls,
-		"environment": environment,
+		"stack": stack,
 		"waived": is_waived,
 	},
 }

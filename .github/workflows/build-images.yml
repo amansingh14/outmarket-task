@@ -1,9 +1,9 @@
-# Reusable: build, scan and (optionally) push the app images.
+# Reusable: build, smoke-test, scan and (optionally) publish + sign the app images.
 #
 # Build once, promote everywhere: each image is tagged with the git *tree hash of its own source
-# directory* (src-<hash>). A promotion merge (development -> staging -> ...) that doesn't change
-# app/backend keeps the same tree hash, so the exact image QA tested is the one production runs.
-# Existing tags are never rebuilt.
+# directory* (src-<hash>). A promotion merge (development -> staging -> ...) doesn't change
+# app/backend, so the exact image QA tested is the one production runs. Existing tags are reused,
+# never rebuilt. Published images carry an SBOM, SLSA provenance and a keyless cosign signature.
 name: Build images
 
 on:
@@ -26,6 +26,7 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write # keyless signing (Sigstore)
 
 jobs:
   tags:
@@ -35,14 +36,16 @@ jobs:
       frontend: ${{ steps.t.outputs.frontend }}
       owner: ${{ steps.t.outputs.owner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref || github.sha }}
       - id: t
         run: |
-          echo "backend=src-$(git rev-parse HEAD:app/backend | cut -c1-12)"   >> "$GITHUB_OUTPUT"
-          echo "frontend=src-$(git rev-parse HEAD:app/frontend | cut -c1-12)" >> "$GITHUB_OUTPUT"
-          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          {
+            echo "backend=src-$(git rev-parse HEAD:app/backend | cut -c1-12)"
+            echo "frontend=src-$(git rev-parse HEAD:app/frontend | cut -c1-12)"
+            echo "owner=${GITHUB_REPOSITORY_OWNER,,}"
+          } >> "$GITHUB_OUTPUT"
           cat "$GITHUB_OUTPUT"
 
   build:
@@ -57,11 +60,11 @@ jobs:
       IMAGE: ghcr.io/${{ needs.tags.outputs.owner }}/idea-board-${{ matrix.component }}
       TAG: ${{ matrix.component == 'backend' && needs.tags.outputs.backend || needs.tags.outputs.frontend }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref || github.sha }}
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         if: inputs.push
         with:
           registry: ghcr.io
@@ -78,9 +81,9 @@ jobs:
             echo "found=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build (local, for scanning)
+      - name: Build (local, for testing and scanning)
         if: steps.exists.outputs.found != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: app/${{ matrix.component }}
           load: true
@@ -88,9 +91,26 @@ jobs:
           build-args: APP_VERSION=${{ env.TAG }}
           cache-from: type=gha,scope=${{ matrix.component }}
           cache-to: type=gha,mode=max,scope=${{ matrix.component }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
+
+      # Run the image the way Kubernetes will: read-only root filesystem, non-root user.
+      - name: Smoke test (backend)
+        if: steps.exists.outputs.found != 'true' && matrix.component == 'backend'
+        run: |
+          # Loads the Alembic environment inside the container (catches import-path bugs) without a DB.
+          docker run --rm --read-only --tmpfs /tmp "$IMAGE:$TAG" alembic upgrade head --sql > /tmp/migration.sql
+          grep -q "CREATE TABLE ideas" /tmp/migration.sql
+          docker run --rm --read-only --tmpfs /tmp "$IMAGE:$TAG" python -c "import app.main, app.dbadmin"
+          echo "backend image: migrations render, app imports" >> "$GITHUB_STEP_SUMMARY"
+      - name: Smoke test (frontend)
+        if: steps.exists.outputs.found != 'true' && matrix.component == 'frontend'
+        run: |
+          # mode=1777 mirrors the chart's emptyDir volumes (world-writable), which nginx (uid 101) needs.
+          docker run -d --name fe --read-only --tmpfs /tmp:mode=1777 --tmpfs /etc/nginx/conf.d:mode=1777 \
+            -e BACKEND_URL=http://127.0.0.1:9 -p 18080:8080 "$IMAGE:$TAG"
+          for _ in $(seq 1 20); do curl -fsS http://127.0.0.1:18080/healthz && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18080/ | grep -q '<div id="root">'
+          docker rm -f fe >/dev/null
+          echo "frontend image: serves the SPA on a read-only root filesystem" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Vulnerability scan (fixable CRITICAL fails the build)
         if: steps.exists.outputs.found != 'true'
@@ -103,22 +123,33 @@ jobs:
           exit-code: "1"
           format: table
 
-      - name: Push
+      - name: Push (with SBOM + SLSA provenance attestations)
+        id: push
         if: inputs.push && steps.exists.outputs.found != 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: app/${{ matrix.component }}
           push: true
           tags: ${{ env.IMAGE }}:${{ env.TAG }}
           build-args: APP_VERSION=${{ env.TAG }}
           cache-from: type=gha,scope=${{ matrix.component }}
+          sbom: true
+          provenance: mode=max
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ inputs.ref || github.sha }}
+
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3.9.1
+        if: steps.push.outcome == 'success'
+      - name: Sign (keyless, Sigstore)
+        if: steps.push.outcome == 'success'
+        run: |
+          cosign sign --yes "$IMAGE@${{ steps.push.outputs.digest }}"
+          echo "signed \`$IMAGE@${{ steps.push.outputs.digest }}\` (verify: cosign verify --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' --certificate-oidc-issuer https://token.actions.githubusercontent.com $IMAGE:$TAG)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Add commit alias tag
         if: inputs.push
         run: |
           SHA=$(git rev-parse HEAD | cut -c1-12)
           docker buildx imagetools create -t "$IMAGE:sha-$SHA" "$IMAGE:$TAG"
-          echo "pushed/aliased \`$IMAGE:$TAG\` as \`sha-$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`$IMAGE:$TAG\` is also \`sha-$SHA\`" >> "$GITHUB_STEP_SUMMARY"

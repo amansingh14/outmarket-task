@@ -11,7 +11,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import Idea, engine, get_session, init_db
+from .db import Idea, engine, get_session, wait_for_db
 
 settings = get_settings()
 logging.basicConfig(
@@ -30,18 +30,8 @@ LATENCY = Histogram(
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # Retry so the API survives starting before the database is reachable
-    # (common in docker-compose and on first boot in Kubernetes).
-    for attempt in range(1, 31):
-        try:
-            init_db()
-            log.info("database ready (attempt %s)", attempt)
-            break
-        except Exception as exc:  # noqa: BLE001
-            log.warning("database not ready (attempt %s): %s", attempt, exc)
-            time.sleep(2)
-    else:
-        raise RuntimeError("database never became ready")
+    # Survive starting before the database is reachable (compose, first boot in Kubernetes).
+    wait_for_db()
     yield
 
 
@@ -120,7 +110,7 @@ def ready():
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         log.error("readiness check failed: %s", exc)
         raise HTTPException(status_code=503, detail="database unavailable") from exc
     return {"status": "ready"}

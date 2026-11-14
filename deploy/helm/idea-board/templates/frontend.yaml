@@ -23,12 +23,7 @@ spec:
         {{- include "ib.labels" . | nindent 8 }}
         {{- include "ib.selector" $c | nindent 8 }}
     spec:
-      {{- with .Values.image.pullSecrets }}
-      imagePullSecrets:
-        {{- range . }}
-        - name: {{ . }}
-        {{- end }}
-      {{- end }}
+      {{- include "ib.pullSecrets" . | nindent 6 }}
       securityContext:
         runAsNonRoot: true
         seccompProfile: { type: RuntimeDefault }
@@ -51,7 +46,15 @@ spec:
             {{- toYaml .Values.frontend.resources | nindent 12 }}
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities: { drop: [ALL] }
+          # nginx writes its rendered config and temp files; everything else is read-only.
+          volumeMounts:
+            - { name: tmp, mountPath: /tmp }
+            - { name: conf, mountPath: /etc/nginx/conf.d }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+        - { name: conf, emptyDir: {} }
 ---
 apiVersion: v1
 kind: Service
@@ -85,7 +88,11 @@ spec:
         name: cpu
         target: { type: Utilization, averageUtilization: {{ .Values.frontend.autoscaling.targetCPUUtilizationPercentage }} }
 {{- end }}
-{{- if .Values.podDisruptionBudget.enabled }}
+{{- /* A PDB is only useful when a pod can be evicted while others keep serving. With one
+     replica and minAvailable 1 it allows zero disruptions, so node drains (EKS/GKE version
+     upgrades) can never finish. Render it only when the minimum replica count exceeds it. */}}
+{{- $minPods := ternary .Values.frontend.autoscaling.minReplicas .Values.frontend.replicas .Values.frontend.autoscaling.enabled }}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int $minPods) (int .Values.podDisruptionBudget.minAvailable)) }}
 ---
 apiVersion: policy/v1
 kind: PodDisruptionBudget

@@ -26,10 +26,12 @@ app.kubernetes.io/component: {{ .component }}
 {{ .root.Values.image.registry }}/{{ .root.Values.image.owner | lower }}/idea-board-{{ .component }}:{{ $tag }}
 {{- end -}}
 
-{{- define "ib.dbSecretName" -}}
-{{- if eq .Values.database.mode "embedded" -}}
-{{ include "ib.fullname" . }}-embedded-db
-{{- else -}}
-{{ .Values.database.existingSecret }}
-{{- end -}}
+{{/* Pod-level settings shared by app pods and hook jobs. */}}
+{{- define "ib.pullSecrets" -}}
+{{- with .Values.image.pullSecrets }}
+imagePullSecrets:
+  {{- range . }}
+  - name: {{ . }}
+  {{- end }}
+{{- end }}
 {{- end -}}

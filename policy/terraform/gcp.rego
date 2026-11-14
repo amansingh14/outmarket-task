@@ -172,3 +172,21 @@ fw_allows(rule, p) if {
 	lo <= p
 	p <= hi
 }
+
+# --------------------------------------------------- secrets / NetworkPolicy
+findings contains {"id": "GCP-SQL-007", "resource": r.address, "msg": msg} if {
+	some r in lib.resources("google_sql_user")
+	pw := object.get(lib.after(r), "password", null)
+	pw != null
+	msg := "password is stored in Terraform state; use password_wo (write-only) with an ephemeral value"
+}
+
+findings contains {"id": "GKE-009", "resource": r.address, "msg": msg} if {
+	some r in lib.resources("google_container_cluster")
+	not network_policy_enforced(r)
+	msg := "set datapath_provider = \"ADVANCED_DATAPATH\" (Dataplane V2) so NetworkPolicies are enforced"
+}
+
+network_policy_enforced(r) if lib.after(r).datapath_provider == "ADVANCED_DATAPATH"
+
+network_policy_enforced(r) if first(object.get(lib.after(r), "network_policy", [])).enabled == true

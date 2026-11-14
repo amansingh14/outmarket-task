@@ -3,7 +3,7 @@
 #
 # This file is symlinked into every envs/<cloud>/ root, so every cloud accepts
 # exactly the same inputs. The values are produced (and validated) by
-# `devops-ai env-profile`, written to <env>.auto.tfvars.json, and are
+# `devops-ai stack-profile`, written to <stack>.<cloud>.auto.tfvars.json, and are
 # identical no matter which cloud they target.
 # ---------------------------------------------------------------------------
 
@@ -12,12 +12,12 @@ variable "project_name" {
   default = "idea-board"
 }
 
-variable "environment" {
-  description = "Logical environment name, e.g. staging or production."
+variable "stack" {
+  description = "Infrastructure stack name (config/stacks/<stack>.yaml), e.g. nonprod, preprod, production."
   type        = string
   validation {
-    condition     = can(regex("^[a-z][a-z0-9-]{1,14}$", var.environment))
-    error_message = "environment must be lowercase alphanumeric/dashes, 2-15 chars."
+    condition     = can(regex("^[a-z][a-z0-9-]{1,14}$", var.stack))
+    error_message = "stack must be lowercase alphanumeric/dashes, 2-15 chars."
   }
 }
 
@@ -26,9 +26,9 @@ variable "region" {
 }
 
 variable "kubernetes_version" {
-  description = "Used on AWS; GKE follows its release channel."
+  description = "Used on AWS; GKE follows its release channel. Raise one minor version at a time on a live cluster."
   type        = string
-  default     = "1.31"
+  default     = "1.34"
 }
 
 variable "node_size" {

@@ -1,5 +1,5 @@
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, Integer, String, create_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
@@ -27,7 +27,8 @@ class Idea(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
-        default=lambda: datetime.now(timezone.utc),
+        index=True,  # ix_ideas_created_at, created by migration 0001
+        default=lambda: datetime.now(UTC),
     )
 
 
@@ -40,10 +41,25 @@ engine = create_engine(
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def init_db() -> None:
-    # The schema is a single table, so create_all is enough here.
-    # A larger service would run Alembic migrations as a Helm pre-upgrade hook.
-    Base.metadata.create_all(engine)
+def wait_for_db(attempts: int = 30, delay: float = 2.0) -> None:
+    """Block until the database answers. The schema itself is owned by Alembic migrations
+    (a Helm hook in Kubernetes, RUN_MIGRATIONS=true in docker compose), never by the app."""
+    import logging
+    import time
+
+    from sqlalchemy import text
+
+    log = logging.getLogger("idea-board")
+    for attempt in range(1, attempts + 1):
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+            log.info("database ready (attempt %s)", attempt)
+            return
+        except Exception as exc:
+            log.warning("database not ready (attempt %s): %s", attempt, exc)
+            time.sleep(delay)
+    raise RuntimeError("database never became ready")
 
 
 def get_session() -> Iterator[Session]:

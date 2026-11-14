@@ -1,0 +1,69 @@
+# The single place in CI that knows how each cloud authenticates (OIDC, no long-lived keys).
+# Adding a cloud = one more block of steps here + a clouds/<name>/ plugin folder.
+name: Cloud auth
+description: Authenticate to a cloud with OIDC and report whether it is configured.
+
+inputs:
+  cloud:
+    description: Cloud plugin name (clouds/<name>)
+    required: true
+  purpose:
+    description: "deploy (infra + deploy identity) or plan (read-only compliance identity)"
+    default: deploy
+  kube-tools:
+    description: Install the cloud's kubectl credential plugin (deploy jobs)
+    default: "false"
+  # Composite actions cannot read `vars`, so callers pass the identities in.
+  aws-deploy-role: { default: "" }
+  aws-plan-role: { default: "" }
+  aws-region: { default: us-east-1 }
+  gcp-workload-identity-provider: { default: "" }
+  gcp-deploy-service-account: { default: "" }
+  gcp-plan-service-account: { default: "" }
+
+outputs:
+  configured:
+    description: "true when credentials were set up for this cloud and purpose"
+    value: ${{ steps.check.outputs.configured }}
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      env:
+        CLOUD: ${{ inputs.cloud }}
+        PURPOSE: ${{ inputs.purpose }}
+        AWS_ROLE: ${{ inputs.purpose == 'plan' && inputs.aws-plan-role || inputs.aws-deploy-role }}
+        GCP_SA: ${{ inputs.purpose == 'plan' && inputs.gcp-plan-service-account || inputs.gcp-deploy-service-account }}
+        GCP_WIF: ${{ inputs.gcp-workload-identity-provider }}
+      run: |
+        case "$CLOUD" in
+          aws) [ -n "$AWS_ROLE" ] && ok=true || ok=false ;;
+          gcp) [ -n "$GCP_WIF" ] && [ -n "$GCP_SA" ] && ok=true || ok=false ;;
+          *) echo "::error::no authentication steps for cloud '$CLOUD' in .github/actions/cloud-auth"; exit 1 ;;
+        esac
+        echo "configured=$ok" >> "$GITHUB_OUTPUT"
+        [ "$ok" = true ] || echo "::notice::$CLOUD $PURPOSE identity not configured; cloud steps will be skipped"
+
+    # ---------------------------------------------------------------- AWS
+    - if: inputs.cloud == 'aws' && steps.check.outputs.configured == 'true'
+      uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+      with:
+        role-to-assume: ${{ inputs.purpose == 'plan' && inputs.aws-plan-role || inputs.aws-deploy-role }}
+        aws-region: ${{ inputs.aws-region }}
+        # The default 1 h session expired mid-apply while Terraform waited on an EKS node-group
+        # update (~55 min), leaving state unsaved and the lock held. The deploy role allows 2 h
+        # (max-session-duration 7200); the read-only plan role keeps the 1 h default.
+        role-duration-seconds: ${{ inputs.purpose == 'plan' && 3600 || 7200 }}
+
+    # ---------------------------------------------------------------- GCP
+    - if: inputs.cloud == 'gcp' && steps.check.outputs.configured == 'true'
+      uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2.1.13
+      with:
+        workload_identity_provider: ${{ inputs.gcp-workload-identity-provider }}
+        service_account: ${{ inputs.purpose == 'plan' && inputs.gcp-plan-service-account || inputs.gcp-deploy-service-account }}
+    - if: inputs.cloud == 'gcp' && steps.check.outputs.configured == 'true' && inputs.kube-tools == 'true'
+      uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2.2.1
+      with:
+        install_components: gke-gcloud-auth-plugin

@@ -27,10 +27,33 @@ variable "labels" {
   type    = map(string)
   default = {}
 }
+variable "password_version" {
+  description = "Bump to rotate the admin password (write-only values are only re-sent when this changes)."
+  type        = number
+  default     = 1
+}
 
-resource "random_password" "db" {
+# The admin password never touches Terraform state or plan files (policy GCP-SQL-007):
+# an *ephemeral* random value is sent through *write-only* arguments to Cloud SQL and to
+# Secret Manager, where the pipeline reads it (clouds/gcp/db-admin-url.sh).
+ephemeral "random_password" "db" {
   length  = 32
   special = false
+}
+
+resource "google_secret_manager_secret" "db_admin" {
+  project   = var.project_id
+  secret_id = "${var.name}-db-admin"
+  labels    = var.labels
+  replication {
+    auto {}
+  }
+}
+
+resource "google_secret_manager_secret_version" "db_admin" {
+  secret                 = google_secret_manager_secret.db_admin.id
+  secret_data_wo         = ephemeral.random_password.db.result
+  secret_data_wo_version = var.password_version
 }
 
 # Cloud SQL instance names are reserved for ~1 week after deletion,
@@ -92,17 +115,18 @@ resource "google_sql_database" "this" {
 }
 
 resource "google_sql_user" "this" {
-  project  = var.project_id
-  name     = var.username
-  instance = google_sql_database_instance.this.name
-  password = random_password.db.result
+  project             = var.project_id
+  name                = var.username
+  instance            = google_sql_database_instance.this.name
+  password_wo         = ephemeral.random_password.db.result
+  password_wo_version = var.password_version
 }
 
 output "host" { value = google_sql_database_instance.this.private_ip_address }
 output "port" { value = 5432 }
 output "db_name" { value = var.db_name }
 output "username" { value = var.username }
-output "password" {
-  value     = random_password.db.result
-  sensitive = true
+output "admin_secret" {
+  description = "Secret Manager secret id holding the admin password."
+  value       = google_secret_manager_secret.db_admin.secret_id
 }
