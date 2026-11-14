@@ -157,6 +157,7 @@ scripts/policy-check.sh gcp preprod                             # needs terrafor
 | [`build-images.yml`](.github/workflows/build-images.yml) | called | build once, smoke-test on a read-only FS, Trivy, SBOM + provenance, cosign keyless signature |
 | [`deploy.yml`](.github/workflows/deploy.yml) | called by CI; manual redeploy / rollback | [`scripts/deploy.sh`](scripts/deploy.sh) per cloud inside the GitHub Environment, then promotion or back-merge PR |
 | [`infra.yml`](.github/workflows/infra.yml) | called by CI when infra changed; manual | `terraform plan` → AI plan review + destructive-change gate → approved `apply` of the reviewed plan |
+| [`destroy.yml`](.github/workflows/destroy.yml) | manual: stack + cloud + typed confirmation | `terraform plan -destroy` → approved [`scripts/destroy.sh`](scripts/destroy.sh): drain cluster load balancers/volumes → lift deletion protection (opt-in; final RDS snapshot) → apply the reviewed plan → verify empty state |
 | [`terraform-compliance.yml`](.github/workflows/terraform-compliance.yml) | every PR | fmt/validate · OPA policies on the full plan of every deployed (cloud, stack) · PR report |
 | [`chatops.yml`](.github/workflows/chatops.yml) | PR comment `/deploy-preview`, `/teardown-preview`, `/ai …` | AI-generated, policy-checked kubectl/helm plan; executed on the non-prod cluster |
 | [`preview-cleanup.yml`](.github/workflows/preview-cleanup.yml) | PR closed | remove the PR's preview environment |
@@ -165,7 +166,7 @@ scripts/policy-check.sh gcp preprod                             # needs terrafor
 | [`ai-evals.yml`](.github/workflows/ai-evals.yml) | weekly; manual | AI evaluation set against the live model |
 
 Everything a workflow does lives in a script you can run locally: `scripts/deploy.sh`,
-`scripts/tf.sh`, `scripts/policy-check.sh` and the `devops-ai` CLI. The workflows only orchestrate.
+`scripts/tf.sh`, `scripts/destroy.sh`, `scripts/policy-check.sh` and the `devops-ai` CLI. The workflows only orchestrate.
 
 ### 1. Repository setup (once)
 
